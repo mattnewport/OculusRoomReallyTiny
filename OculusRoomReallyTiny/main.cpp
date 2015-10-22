@@ -456,13 +456,13 @@ struct OculusTexture {
     std::unique_ptr<ovrSwapTextureSet, std::function<void(ovrSwapTextureSet*)>> TextureSet;
     ID3D11RenderTargetViewPtr TexRtvs[2];
 
-    OculusTexture(ID3D11Device* device, ovrHmd hmd, ovrSizei size)
+    OculusTexture(ID3D11Device* device, ovrSession session, ovrSizei size)
         : TextureSet{
-              [hmd, size, device, &texRtv = TexRtvs] {
+              [session, size, device, &texRtv = TexRtvs] {
                   // Create and validate the swap texture set and stash it in unique_ptr
                   ovrSwapTextureSet* ts{};
                   auto result = ovr_CreateSwapTextureSetD3D11(
-                      hmd, device, std::begin({CD3D11_TEXTURE2D_DESC(
+                      session, device, std::begin({CD3D11_TEXTURE2D_DESC(
                                        DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, size.w, size.h, 1, 1,
                                        D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET)}),
                       ovrSwapTextureSetD3D11_Typeless, &ts);
@@ -471,7 +471,7 @@ struct OculusTexture {
                   return ts;
               }(),
               // unique_ptr Deleter lambda to clean up the swap texture set
-              [hmd](ovrSwapTextureSet* ts) { ovr_DestroySwapTextureSet(hmd, ts); }} {
+              [session](ovrSwapTextureSet* ts) { ovr_DestroySwapTextureSet(session, ts); }} {
         // Create render target views for each of the textures in the swap texture set
         std::transform(TextureSet->Textures, TextureSet->Textures + TextureSet->TextureCount,
                        TexRtvs, [device](auto tex) {
@@ -617,7 +617,7 @@ DirectX11::DirectX11(HWND window, int vpW, int vpH, const LUID* pLuid)
     Device->CreateSamplerState(&ss, &SamplerState);
 }
 
-// Helper to wrap ovr types like ovrHmd and ovrTexture* in a unique_ptr with custom create / destroy
+// Helper to wrap ovr types like ovrSession and ovrTexture* in a unique_ptr with custom create / destroy
 auto create_unique = [](auto createFunc, auto destroyFunc) {
     return std::unique_ptr<std::remove_reference_t<decltype(*createFunc())>, decltype(destroyFunc)>{
         createFunc(), destroyFunc};
@@ -626,17 +626,17 @@ auto create_unique = [](auto createFunc, auto destroyFunc) {
 ovrResult MainLoop(const Window& window) {
     auto result = ovrResult{};
     auto luid = ovrGraphicsLuid{};
-    // Initialize the HMD, stash it in a unique_ptr for automatic cleanup.
-    auto HMD = create_unique(
+    // Initialize the session, stash it in a unique_ptr for automatic cleanup.
+    auto session = create_unique(
         [&result, &luid] {
-            ovrHmd HMD{};
-            result = ovr_Create(&HMD, &luid);
-            return HMD;
+            ovrSession session{};
+            result = ovr_Create(&session, &luid);
+            return session;
         },
         ovr_Destroy);
     if (OVR_FAILURE(result)) return result;
 
-    auto hmdDesc = ovr_GetHmdDesc(HMD.get());
+    auto hmdDesc = ovr_GetHmdDesc(session.get());
 
     // Setup Device and shared D3D objects (shaders, state objects, etc.)
     // Note: the mirror window can be any size, for this sample we use 1/2 the HMD resolution
@@ -645,10 +645,10 @@ ovrResult MainLoop(const Window& window) {
 
     // Create the eye render buffers (caution if actual size < requested due to HW limits).
     const ovrSizei idealSizes[] = {
-        ovr_GetFovTextureSize(HMD.get(), ovrEye_Left, hmdDesc.DefaultEyeFov[ovrEye_Left], 1.0f),
-        ovr_GetFovTextureSize(HMD.get(), ovrEye_Right, hmdDesc.DefaultEyeFov[ovrEye_Right], 1.0f)};
-    OculusTexture eyeRenderTextures[] = {{directx.Device, HMD.get(), idealSizes[ovrEye_Left]},
-                                         {directx.Device, HMD.get(), idealSizes[ovrEye_Right]}};
+        ovr_GetFovTextureSize(session.get(), ovrEye_Left, hmdDesc.DefaultEyeFov[ovrEye_Left], 1.0f),
+        ovr_GetFovTextureSize(session.get(), ovrEye_Right, hmdDesc.DefaultEyeFov[ovrEye_Right], 1.0f)};
+    OculusTexture eyeRenderTextures[] = {{directx.Device, session.get(), idealSizes[ovrEye_Left]},
+                                         {directx.Device, session.get(), idealSizes[ovrEye_Right]}};
     DepthBuffer eyeDepthBuffers[] = {{directx.Device, idealSizes[ovrEye_Left]},
                                      {directx.Device, idealSizes[ovrEye_Right]}};
     const ovrRecti eyeRenderViewports[] = {{{0, 0}, idealSizes[ovrEye_Left]},
@@ -656,16 +656,16 @@ ovrResult MainLoop(const Window& window) {
 
     // Create mirror texture to see on the monitor, stash it in a unique_ptr for automatic cleanup.
     auto mirrorTexture = create_unique(
-        [&result, hmd = HMD.get(), &directx] {
+        [&result, session = session.get(), &directx] {
             ovrTexture* mirrorTexture{};
             result = ovr_CreateMirrorTextureD3D11(
-                hmd, directx.Device,
+                session, directx.Device,
                 std::begin({CD3D11_TEXTURE2D_DESC(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, directx.WinSizeW,
                                                   directx.WinSizeH, 1, 1)}),
                 0, &mirrorTexture);
             return mirrorTexture;
         },
-        [hmd = HMD.get()](ovrTexture* mt) { ovr_DestroyMirrorTexture(hmd, mt); });
+        [session = session.get()](ovrTexture* mt) { ovr_DestroyMirrorTexture(session, mt); });
     if (OVR_FAILURE(result)) return result;
 
     // Initialize the scene and camera
@@ -699,16 +699,17 @@ ovrResult MainLoop(const Window& window) {
 
         // Get both eye poses simultaneously, with IPD offset already included.
         const ovrEyeRenderDesc eyeRenderDesc[] = {
-            ovr_GetRenderDesc(HMD.get(), ovrEye_Left, hmdDesc.DefaultEyeFov[ovrEye_Left]),
-            ovr_GetRenderDesc(HMD.get(), ovrEye_Right, hmdDesc.DefaultEyeFov[ovrEye_Right])};
+            ovr_GetRenderDesc(session.get(), ovrEye_Left, hmdDesc.DefaultEyeFov[ovrEye_Left]),
+            ovr_GetRenderDesc(session.get(), ovrEye_Right, hmdDesc.DefaultEyeFov[ovrEye_Right])};
         
-        const auto eyeRenderPoses = [hmd = HMD.get(), &eyeRenderDesc] {
+        double sensorSampleTime = 0.0;
+        const auto eyeRenderPoses = [session = session.get(), &eyeRenderDesc, &sensorSampleTime] {
             std::array<ovrPosef, 2> res;
-            const auto frameTime = ovr_GetPredictedDisplayTime(hmd, 0);
+            const auto frameTime = ovr_GetPredictedDisplayTime(session, 0);
             // Keeping sensorSampleTime as close to ovr_GetTrackingState as possible - fed into the
             // layer
-            const auto sensorSampleTime = ovr_GetTimeInSeconds();
-            const auto hmdState = ovr_GetTrackingState(hmd, frameTime, ovrTrue);
+            sensorSampleTime = ovr_GetTimeInSeconds();
+            const auto hmdState = ovr_GetTrackingState(session, frameTime, ovrTrue);
             const ovrVector3f HmdToEyeViewOffset[] = {
                 eyeRenderDesc[ovrEye_Left].HmdToEyeViewOffset,
                 eyeRenderDesc[ovrEye_Right].HmdToEyeViewOffset};
@@ -745,18 +746,19 @@ ovrResult MainLoop(const Window& window) {
         }
 
         // Initialize our single full screen Fov layer.
-        const auto ld = [&eyeRenderTextures, &eyeRenderViewports, &hmdDesc, &eyeRenderPoses] {
+        const auto ld = [&eyeRenderTextures, &eyeRenderViewports, &hmdDesc, &eyeRenderPoses, sensorSampleTime] {
             auto res = ovrLayerEyeFov{{ovrLayerType_EyeFov, 0}};
             for (auto eye : {ovrEye_Left, ovrEye_Right}) {
                 res.ColorTexture[eye] = eyeRenderTextures[eye].TextureSet.get();
                 res.Viewport[eye] = eyeRenderViewports[eye];
                 res.Fov[eye] = hmdDesc.DefaultEyeFov[eye];
                 res.RenderPose[eye] = eyeRenderPoses[eye];
+                res.SensorSampleTime = sensorSampleTime;
             }
             return res;
         }();
         const auto layers = &ld.Header;
-        result = ovr_SubmitFrame(HMD.get(), 0, nullptr, &layers, 1);
+        result = ovr_SubmitFrame(session.get(), 0, nullptr, &layers, 1);
         // exit the rendering loop if submit returns an error, will retry on ovrError_DisplayLost
         if (OVR_FAILURE(result)) return result;
 
