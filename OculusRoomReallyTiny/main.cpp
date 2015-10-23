@@ -29,7 +29,6 @@ limitations under the License.
 #include <functional>
 #include <initializer_list>
 #include <memory>
-#include <tuple>
 #include <type_traits>
 #include <vector>
 
@@ -160,8 +159,7 @@ struct DepthBuffer {
 };
 
 struct DirectX11 {
-    int WinSizeW = 0;
-    int WinSizeH = 0;
+    int WinSizeW = 0, WinSizeH = 0;
     ID3D11DevicePtr Device;
     ID3D11DeviceContextPtr Context;
     IDXGISwapChainPtr SwapChain;
@@ -238,35 +236,25 @@ auto createTexture(ID3D11Device* device, ID3D11DeviceContext* context, TextureFi
 }
 
 struct Vertex {
-    XMFLOAT3 Pos;
-    uint32_t C;
-    float U, V;
+    XMFLOAT3 pos;
+    uint32_t c;
+    XMFLOAT2 uv;
 };
 
 struct TriangleSet {
     vector<Vertex> Vertices;
     vector<uint16_t> Indices;
 
-    template<typename Tuple, size_t... Is>
-    void callAddBox(const Tuple& t, index_sequence<Is...>) {
-        AddBox(get<Is>(t)...);
-    }
-
     struct Box {
-        Box(float x1, float y1, float z1, float x2, float y2, float z2, DWORD c)
-            : t{make_tuple(x1, y1, z1, x2, y2, z2, c)} {}
-        tuple<float, float, float, float, float, float, DWORD> t;
+        float x1, y1, z1, x2, y2, z2;
+        uint32_t c;
     };
 
-    TriangleSet() = default;
-    TriangleSet(
-        initializer_list<Box> boxes) {
-        for (const auto& b : boxes) {
-            callAddBox(b.t, make_index_sequence<tuple_size<decltype(b.t)>::value>{});
-        }
+    TriangleSet(initializer_list<Box> boxes) {
+        for (const auto& b : boxes) AddBox(b);
     }
 
-    void AddBox(float x1, float y1, float z1, float x2, float y2, float z2, DWORD c) {
+    void AddBox(const Box& b) {
         struct Quad {
             Quad(const Vertex& v0, const Vertex& v1, const Vertex& v2, const Vertex& v3)
                 : vs{v0, v1, v2, v3} {
@@ -284,77 +272,68 @@ struct TriangleSet {
                                b = saturate(((c >> 0) & 0xff) * mod);
                     return (c & 0xff000000) + (r << 16) + (g << 8) + b;
                 };
-                for (auto& v : vs) v.C = modifyColor(v.C, v.Pos);
+                for (auto& v : vs) v.c = modifyColor(v.c, v.pos);
             }
             Vertex vs[4];
-        };
+        } quads[] = {{{{b.x1, b.y2, b.z1}, b.c, {b.z1, b.x1}},
+                      {{b.x2, b.y2, b.z1}, b.c, {b.z1, b.x2}},
+                      {{b.x1, b.y2, b.z2}, b.c, {b.z2, b.x1}},
+                      {{b.x2, b.y2, b.z2}, b.c, {b.z2, b.x2}}},
+                     {{{b.x2, b.y1, b.z1}, b.c, {b.z1, b.x2}},
+                      {{b.x1, b.y1, b.z1}, b.c, {b.z1, b.x1}},
+                      {{b.x2, b.y1, b.z2}, b.c, {b.z2, b.x2}},
+                      {{b.x1, b.y1, b.z2}, b.c, {b.z2, b.x1}}},
+                     {{{b.x1, b.y1, b.z2}, b.c, {b.z2, b.y1}},
+                      {{b.x1, b.y1, b.z1}, b.c, {b.z1, b.y1}},
+                      {{b.x1, b.y2, b.z2}, b.c, {b.z2, b.y2}},
+                      {{b.x1, b.y2, b.z1}, b.c, {b.z1, b.y2}}},
+                     {{{b.x2, b.y1, b.z1}, b.c, {b.z1, b.y1}},
+                      {{b.x2, b.y1, b.z2}, b.c, {b.z2, b.y1}},
+                      {{b.x2, b.y2, b.z1}, b.c, {b.z1, b.y2}},
+                      {{b.x2, b.y2, b.z2}, b.c, {b.z2, b.y2}}},
+                     {{{b.x1, b.y1, b.z1}, b.c, {b.x1, b.y1}},
+                      {{b.x2, b.y1, b.z1}, b.c, {b.x2, b.y1}},
+                      {{b.x1, b.y2, b.z1}, b.c, {b.x1, b.y2}},
+                      {{b.x2, b.y2, b.z1}, b.c, {b.x2, b.y2}}},
+                     {{{b.x2, b.y1, b.z2}, b.c, {b.x2, b.y1}},
+                      {{b.x1, b.y1, b.z2}, b.c, {b.x1, b.y1}},
+                      {{b.x2, b.y2, b.z2}, b.c, {b.x2, b.y2}},
+                      {{b.x1, b.y2, b.z2}, b.c, {b.x1, b.y2}}}};
 
-        auto addQuads = [this](initializer_list<Quad> qs) {
+        for (const auto& q : quads) {
             auto addTriangle = [this](const initializer_list<Vertex>& vs) {
                 for (const auto& v : vs) {
-                    Indices.push_back(static_cast<short>(size(Vertices)));
+                    Indices.push_back(static_cast<uint16_t>(size(Vertices)));
                     Vertices.push_back(v);
                 }
             };
-
-            for (const auto& q : qs) {
-                addTriangle({q.vs[0], q.vs[1], q.vs[2]});
-                addTriangle({q.vs[3], q.vs[2], q.vs[1]});
-            }
+            addTriangle({q.vs[0], q.vs[1], q.vs[2]});
+            addTriangle({q.vs[3], q.vs[2], q.vs[1]});
         };
-
-        addQuads({{{{x1, y2, z1}, c, z1, x1},
-                   {{x2, y2, z1}, c, z1, x2},
-                   {{x1, y2, z2}, c, z2, x1},
-                   {{x2, y2, z2}, c, z2, x2}},
-                  {{{x2, y1, z1}, c, z1, x2},
-                   {{x1, y1, z1}, c, z1, x1},
-                   {{x2, y1, z2}, c, z2, x2},
-                   {{x1, y1, z2}, c, z2, x1}},
-                  {{{x1, y1, z2}, c, z2, y1},
-                   {{x1, y1, z1}, c, z1, y1},
-                   {{x1, y2, z2}, c, z2, y2},
-                   {{x1, y2, z1}, c, z1, y2}},
-                  {{{x2, y1, z1}, c, z1, y1},
-                   {{x2, y1, z2}, c, z2, y1},
-                   {{x2, y2, z1}, c, z1, y2},
-                   {{x2, y2, z2}, c, z2, y2}},
-                  {{{x1, y1, z1}, c, x1, y1},
-                   {{x2, y1, z1}, c, x2, y1},
-                   {{x1, y2, z1}, c, x1, y2},
-                   {{x2, y2, z1}, c, x2, y2}},
-                  {{{x2, y1, z2}, c, x2, y1},
-                   {{x1, y1, z2}, c, x1, y1},
-                   {{x2, y2, z2}, c, x2, y2},
-                   {{x1, y2, z2}, c, x1, y2}}});
     }
 };
 
 struct Model {
     XMFLOAT3 Pos;
-    XMFLOAT4 Rot;
     ID3D11ShaderResourceViewPtr Tex;
-    ID3D11BufferPtr VertexBuffer;
-    ID3D11BufferPtr IndexBuffer;
+    ID3D11BufferPtr VertexBuffer, IndexBuffer;
     size_t NumIndices;
 
-    Model(ID3D11Device* device, const TriangleSet& t, XMFLOAT3 argPos, XMFLOAT4 argRot,
+    Model(ID3D11Device* device, const TriangleSet& t, XMFLOAT3 argPos,
           ID3D11ShaderResourceView* tex)
-        : Pos(argPos), Rot(argRot), Tex(tex), NumIndices{size(t.Indices)} {
+        : Pos(argPos), Tex(tex), NumIndices{size(t.Indices)} {
+        auto byteSize = [](const auto& v) { return UINT(size(v) * sizeof(v[0])); };
         device->CreateBuffer(
-            begin({CD3D11_BUFFER_DESC{UINT(size(t.Vertices) * sizeof(t.Vertices.back())),
-                                      D3D11_BIND_VERTEX_BUFFER}}),
-            begin({D3D11_SUBRESOURCE_DATA{t.Vertices.data(), 0, 0}}), &VertexBuffer);
+            data({CD3D11_BUFFER_DESC{byteSize(t.Vertices), D3D11_BIND_VERTEX_BUFFER}}),
+            data({D3D11_SUBRESOURCE_DATA{t.Vertices.data()}}), &VertexBuffer);
 
         device->CreateBuffer(
-            begin({CD3D11_BUFFER_DESC{UINT(size(t.Indices) * sizeof(t.Indices.back())),
-                                      D3D11_BIND_INDEX_BUFFER}}),
-            begin({D3D11_SUBRESOURCE_DATA{t.Indices.data(), 0, 0}}), &IndexBuffer);
+            data({CD3D11_BUFFER_DESC{byteSize(t.Indices), D3D11_BIND_INDEX_BUFFER}}),
+            data({D3D11_SUBRESOURCE_DATA{t.Indices.data()}}), &IndexBuffer);
     }
 
     void Render(DirectX11& directx, const XMMATRIX& projView) const {
-        const auto mat = XMMatrixRotationQuaternion(XMLoadFloat4(&Rot)) *
-                         XMMatrixTranslationFromVector(XMLoadFloat3(&Pos)) * projView;
+        const auto mat = XMMatrixTranslationFromVector(XMLoadFloat3(&Pos)) * projView;
 
         auto map = D3D11_MAPPED_SUBRESOURCE{};
         directx.Context->Map(directx.ConstantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &map);
@@ -364,19 +343,19 @@ struct Model {
         directx.Context->IASetInputLayout(directx.InputLayout);
         directx.Context->IASetIndexBuffer(IndexBuffer, DXGI_FORMAT_R16_UINT, 0);
         const auto vbs = {VertexBuffer.GetInterfacePtr()};
-        directx.Context->IASetVertexBuffers(0, UINT(size(vbs)), begin(vbs),
-                                            begin({UINT(sizeof(Vertex))}),
-                                            begin({UINT(0)}));
+        directx.Context->IASetVertexBuffers(0, UINT(size(vbs)),
+                                            data({VertexBuffer.GetInterfacePtr()}),
+                                            data({UINT(sizeof(Vertex))}), data({0u}));
         directx.Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
         directx.Context->VSSetShader(directx.D3DVert, nullptr, 0);
         directx.Context->PSSetShader(directx.D3DPix, nullptr, 0);
 
         const auto samplerStates = {directx.SamplerState.GetInterfacePtr()};
-        directx.Context->PSSetSamplers(0, UINT(size(samplerStates)), begin(samplerStates));
+        directx.Context->PSSetSamplers(0, UINT(size(samplerStates)), data(samplerStates));
 
         const auto texSrvs = {Tex.GetInterfacePtr()};
-        directx.Context->PSSetShaderResources(0, UINT(size(texSrvs)), begin(texSrvs));
+        directx.Context->PSSetShaderResources(0, UINT(size(texSrvs)), data(texSrvs));
         directx.Context->DrawIndexed(UINT(NumIndices), 0, 0);
     }
 };
@@ -389,7 +368,9 @@ struct Scene {
     }
 
     Scene(ID3D11Device* device, ID3D11DeviceContext* context) {
-        auto add = [this](Model* n) { Models.emplace_back(n); };
+        auto add = [this, device](auto&&... xs) {
+            Models.push_back(make_unique<Model>(device, xs...));
+        };
 
         enum : uint32_t {
             DARKER_GREY = 0xff383838,
@@ -402,28 +383,26 @@ struct Scene {
         };
 
         TriangleSet cube{{0.5f, -0.5f, 0.5f, -0.5f, 0.5f, -0.5f, DARK_GREY}};
-        add(new Model(device, cube, {0, 0, 0}, {0, 0, 0, 1},
-                      createTexture(device, context, TextureFill::AUTO_CEILING)));
+        add(cube, XMFLOAT3{0, 0, 0}, createTexture(device, context, TextureFill::AUTO_CEILING));
 
         TriangleSet spareCube{{0.1f, -0.1f, 0.1f, -0.1f, +0.1f, -0.1f, RED}};
-        add(new Model(device, spareCube, {0, -10, 0}, {0, 0, 0, 1},
-                      createTexture(device, context, TextureFill::AUTO_CEILING)));
+        add(spareCube, XMFLOAT3{0, -10, 0},
+            createTexture(device, context, TextureFill::AUTO_CEILING));
 
         TriangleSet walls{{10.1f, 0.0f, 20.0f, 10.0f, 4.0f, -20.0f, MID_GREY},      // Left Wall
                           {10.0f, -0.1f, 20.1f, -10.0f, 4.0f, 20.0f, MID_GREY},     // Back Wall
                           {-10.0f, -0.1f, 20.0f, -10.1f, 4.0f, -20.0f, MID_GREY}};  // Right Wall
-        add(new Model(device, walls, {0, 0, 0}, {0, 0, 0, 1},
-                      createTexture(device, context, TextureFill::AUTO_WALL)));
+        add(walls, XMFLOAT3{0, 0, 0}, createTexture(device, context, TextureFill::AUTO_WALL));
 
         TriangleSet floors{
             {10.0f, -0.1f, 20.0f, -10.0f, 0.0f, -20.1f, MID_GREY},     // Main floor
             {15.0f, -6.1f, -18.0f, -15.0f, -6.0f, -30.0f, MID_GREY}};  // Bottom floor
-        add(new Model(device, floors, {0, 0, 0}, {0, 0, 0, 1},
-                      createTexture(device, context, TextureFill::AUTO_FLOOR)));  // Floors
+        add(floors, XMFLOAT3{0, 0, 0},
+            createTexture(device, context, TextureFill::AUTO_FLOOR));  // Floors
 
         TriangleSet ceiling{{10.0f, 4.0f, 20.0f, -10.0f, 4.1f, -20.1f, MID_GREY}};
-        add(new Model(device, ceiling, {0, 0, 0}, {0, 0, 0, 1},
-                      createTexture(device, context, TextureFill::AUTO_CEILING)));  // Ceiling
+        add(ceiling, XMFLOAT3{0, 0, 0},
+            createTexture(device, context, TextureFill::AUTO_CEILING));  // Ceiling
 
         TriangleSet furniture{
             {-9.5f, 0.75f, -3.0f, -10.1f, 2.5f, -3.1f, DARKER_GREY},   // Right side shelf verticals
@@ -444,24 +423,24 @@ struct Scene {
             {0.799f, 1.0f, 1.101f, 0.861f, 0.0f, 1.039f, DARK_BLUE},     // Chair Leg 2
             {1.4f, 0.97f, 1.05f, 0.8f, 0.92f, 1.10f, DARK_BLUE}};        // Chair Back high bar
         for (float f = 5; f <= 9; f += 1)
-            furniture.AddBox(-f, 0.0f, -20.0f, -f - 0.1f, 1.1f, -20.1f,
-                             MID_DARK_GREY);  // Left Bars
+            furniture.AddBox(
+                {-f, 0.0f, -20.0f, -f - 0.1f, 1.1f, -20.1f, MID_DARK_GREY});  // Left Bars
         for (float f = 5; f <= 9; f += 1)
-            furniture.AddBox(f, 1.1f, -20.0f, f + 0.1f, 0.0f, -20.1f, MID_DARK_GREY);  // Right Bars
+            furniture.AddBox(
+                {f, 1.1f, -20.0f, f + 0.1f, 0.0f, -20.1f, MID_DARK_GREY});  // Right Bars
         for (float f = 3.0f; f <= 6.6f; f += 0.4f)
-            furniture.AddBox(3, 0.0f, -f, 2.9f, 1.3f, -f - 0.1f, DARK_GREY);  // Posts
-        add(new Model(
-            device, furniture, {0, 0, 0}, {0, 0, 0, 1},
-            createTexture(device, context, TextureFill::AUTO_WHITE)));  // Fixtures & furniture
+            furniture.AddBox({3, 0.0f, -f, 2.9f, 1.3f, -f - 0.1f, DARK_GREY});  // Posts
+        add(furniture, XMFLOAT3{0, 0, 0},
+            createTexture(device, context, TextureFill::AUTO_WHITE));  // Fixtures & furniture
     }
 };
 
 struct Camera {
-    XMVECTOR Pos;
-    XMVECTOR Rot;
+    XMVECTOR Pos, Rot;
     auto GetViewMatrix() const {
-        const auto forward = XMVector3Rotate(XMVectorSet(0, 0, -1, 0), Rot);
-        return XMMatrixLookAtRH(Pos, Pos + forward, XMVector3Rotate(XMVectorSet(0, 1, 0, 0), Rot));
+        const auto forward = XMVector3Rotate(XMVectorSet(0, 0, -1, 0), Rot),
+                   up = XMVector3Rotate(XMVectorSet(0, 1, 0, 0), Rot);
+        return XMMatrixLookAtRH(Pos, Pos + forward, up);
     }
 };
 
@@ -472,32 +451,33 @@ struct OculusTexture {
     ID3D11RenderTargetViewPtr TexRtvs[2];
 
     OculusTexture(ID3D11Device* device, ovrSession session, ovrSizei size)
-        : TextureSet{
-              [session, size, device, &texRtv = TexRtvs] {
-                  // Create and validate the swap texture set and stash it in unique_ptr
-                  ovrSwapTextureSet* ts{};
-                  auto result = ovr_CreateSwapTextureSetD3D11(
-                      session, device, begin({CD3D11_TEXTURE2D_DESC(
-                                       DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, size.w, size.h, 1, 1,
-                                       D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET)}),
-                      ovrSwapTextureSetD3D11_Typeless, &ts);
-                  VALIDATE(OVR_SUCCESS(result), "Failed to create SwapTextureSet.");
-                  VALIDATE(size_t(ts->TextureCount) == std::size(texRtv), "TextureCount mismatch.");
-                  return ts;
-              }(),
-              // unique_ptr Deleter lambda to clean up the swap texture set
-              [session](ovrSwapTextureSet* ts) { ovr_DestroySwapTextureSet(session, ts); }} {
+        : TextureSet{[session, size, device, &texRtv = TexRtvs] {
+                         // Create and validate the swap texture set and stash it in unique_ptr
+                         ovrSwapTextureSet* ts{};
+                         VALIDATE(OVR_SUCCESS(ovr_CreateSwapTextureSetD3D11(
+                                      session, device,
+                                      data({CD3D11_TEXTURE2D_DESC(
+                                          DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, size.w, size.h, 1, 1,
+                                          D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET)}),
+                                      ovrSwapTextureSetD3D11_Typeless, &ts)),
+                                  "Failed to create SwapTextureSet.");
+                         VALIDATE(size_t(ts->TextureCount) == std::size(texRtv),
+                                  "TextureCount mismatch.");
+                         return ts;
+                     }(),
+                     // unique_ptr Deleter lambda to clean up the swap texture set
+                     [session](ovrSwapTextureSet* ts) { ovr_DestroySwapTextureSet(session, ts); }} {
         // Create render target views for each of the textures in the swap texture set
-        transform(TextureSet->Textures, TextureSet->Textures + TextureSet->TextureCount,
-                       TexRtvs, [device](auto tex) {
-                           ID3D11RenderTargetViewPtr rtv;
-                           device->CreateRenderTargetView(
-                               reinterpret_cast<ovrD3D11Texture&>(tex).D3D11.pTexture,
-                               begin({CD3D11_RENDER_TARGET_VIEW_DESC{
-                                   D3D11_RTV_DIMENSION_TEXTURE2D, DXGI_FORMAT_R8G8B8A8_UNORM}}),
-                               &rtv);
-                           return rtv;
-                       });
+        transform(TextureSet->Textures, TextureSet->Textures + TextureSet->TextureCount, TexRtvs,
+                  [device](auto tex) {
+                      ID3D11RenderTargetViewPtr rtv;
+                      device->CreateRenderTargetView(
+                          reinterpret_cast<ovrD3D11Texture&>(tex).D3D11.pTexture,
+                          data({CD3D11_RENDER_TARGET_VIEW_DESC{D3D11_RTV_DIMENSION_TEXTURE2D,
+                                                               DXGI_FORMAT_R8G8B8A8_UNORM}}),
+                          &rtv);
+                      return rtv;
+                  });
     }
 
     auto AdvanceToNextTexture() {
@@ -535,7 +515,7 @@ DirectX11::DirectX11(HWND window, int vpW, int vpH, const LUID* pLuid)
     }();
     VALIDATE(SUCCEEDED(D3D11CreateDeviceAndSwapChain(
                  adapter, DriverType, nullptr, createFlags, nullptr, 0, D3D11_SDK_VERSION,
-                 begin({DXGI_SWAP_CHAIN_DESC{
+                 data({DXGI_SWAP_CHAIN_DESC{
                      {UINT(WinSizeW), UINT(WinSizeH), {}, DXGI_FORMAT_R8G8B8A8_UNORM},  // Buffer
                      {1},  // SampleDesc
                      DXGI_USAGE_RENDER_TARGET_OUTPUT,
@@ -552,12 +532,11 @@ DirectX11::DirectX11(HWND window, int vpW, int vpH, const LUID* pLuid)
              "IDXGISwapChain::GetBuffer() failed");
 
     // Buffer for shader constants
-    Device->CreateBuffer(
-        begin({CD3D11_BUFFER_DESC(sizeof(XMMATRIX), D3D11_BIND_CONSTANT_BUFFER,
-                                       D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE)}),
-        nullptr, &ConstantBuffer);
+    Device->CreateBuffer(data({CD3D11_BUFFER_DESC(sizeof(XMMATRIX), D3D11_BIND_CONSTANT_BUFFER,
+                                                  D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE)}),
+                         nullptr, &ConstantBuffer);
     auto buffs = {ConstantBuffer.GetInterfacePtr()};
-    Context->VSSetConstantBuffers(0, UINT(size(buffs)), begin(buffs));
+    Context->VSSetConstantBuffers(0, UINT(size(buffs)), data(buffs));
 
     // Set max frame latency to 1
     IDXGIDevice1Ptr DXGIDevice1;
@@ -568,17 +547,17 @@ DirectX11::DirectX11(HWND window, int vpW, int vpH, const LUID* pLuid)
     // Set up render states
     // Create and set rasterizer state
     ID3D11RasterizerStatePtr rss;
-    Device->CreateRasterizerState(begin({CD3D11_RASTERIZER_DESC{D3D11_DEFAULT}}), &rss);
+    Device->CreateRasterizerState(data({CD3D11_RASTERIZER_DESC{D3D11_DEFAULT}}), &rss);
     Context->RSSetState(rss);
 
     // Create and set depth stencil state
     ID3D11DepthStencilStatePtr dss;
-    Device->CreateDepthStencilState(begin({CD3D11_DEPTH_STENCIL_DESC{D3D11_DEFAULT}}), &dss);
+    Device->CreateDepthStencilState(data({CD3D11_DEPTH_STENCIL_DESC{D3D11_DEFAULT}}), &dss);
     Context->OMSetDepthStencilState(dss, 0);
 
     // Create and set blend state
     ID3D11BlendStatePtr bs;
-    Device->CreateBlendState(begin({CD3D11_BLEND_DESC{D3D11_DEFAULT}}), &bs);
+    Device->CreateBlendState(data({CD3D11_BLEND_DESC{D3D11_DEFAULT}}), &bs);
     Context->OMSetBlendState(bs, nullptr, 0xffffffff);
 
     auto compileShader = [](const char* src, const char* target) {
@@ -604,9 +583,9 @@ DirectX11::DirectX11(HWND window, int vpW, int vpH, const LUID* pLuid)
     Device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr,
                                &D3DVert);
     D3D11_INPUT_ELEMENT_DESC defaultVertexDesc[] = {
-        {"Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
-        {"Color", 0, DXGI_FORMAT_B8G8R8A8_UNORM, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
-        {"TexCoord", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"Position", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Vertex, pos)},
+        {"Color", 0, DXGI_FORMAT_B8G8R8A8_UNORM, 0, offsetof(Vertex, c)},
+        {"TexCoord", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(Vertex, uv)},
     };
     Device->CreateInputLayout(defaultVertexDesc, UINT(size(defaultVertexDesc)),
                               vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &InputLayout);
@@ -675,11 +654,12 @@ ovrResult MainLoop(const Window& window) {
             ovrTexture* mirrorTexture{};
             result = ovr_CreateMirrorTextureD3D11(
                 session, directx.Device,
-                begin({CD3D11_TEXTURE2D_DESC(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, directx.WinSizeW,
-                                                  directx.WinSizeH, 1, 1)}),
+                data({CD3D11_TEXTURE2D_DESC(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, directx.WinSizeW,
+                                            directx.WinSizeH, 1, 1)}),
                 0, &mirrorTexture);
             return mirrorTexture;
         },
+        // lambda to destroy mirror texture on unique_ptr destruction
         [session = session.get()](ovrTexture* mt) { ovr_DestroyMirrorTexture(session, mt); });
     if (OVR_FAILURE(result)) return result;
 
@@ -755,7 +735,8 @@ ovrResult MainLoop(const Window& window) {
         }
 
         // Initialize our single full screen Fov layer.
-        const auto ld = [&eyeRenderTextures, &eyeRenderViewports, &hmdDesc, &eyeRenderPoses, sensorSampleTime] {
+        const auto ld = [&eyeRenderTextures, &eyeRenderViewports, &hmdDesc, &eyeRenderPoses,
+                         sensorSampleTime] {
             auto res = ovrLayerEyeFov{{ovrLayerType_EyeFov, 0}};
             for (auto eye : {ovrEye_Left, ovrEye_Right}) {
                 res.ColorTexture[eye] = eyeRenderTextures[eye].TextureSet.get();
@@ -790,6 +771,5 @@ int WINAPI WinMain(HINSTANCE hinst, HINSTANCE, LPSTR, int) {
     window.Run(MainLoop);
 
     ovr_Shutdown();
-
     return 0;
 }
