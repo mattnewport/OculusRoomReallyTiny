@@ -268,8 +268,27 @@ struct TriangleSet {
 
     void AddBox(float x1, float y1, float z1, float x2, float y2, float z2, DWORD c) {
         struct Quad {
-            Vertex v0, v1, v2, v3;
+            Quad(const Vertex& v0, const Vertex& v1, const Vertex& v2, const Vertex& v3)
+                : vs{v0, v1, v2, v3} {
+                auto modifyColor = [](uint32_t c, XMFLOAT3 pos) {
+                    auto length = [](const auto& v) { return XMVectorGetX(XMVector3Length(v)); };
+                    const auto v = XMLoadFloat3(&pos);
+                    const auto dist1 = length(v + XMVectorSet(2, -4, 2, 0)),
+                               dist2 = length(v + XMVectorSet(-3, -4, 3, 0)),
+                               dist3 = length(v + XMVectorSet(4, -3, -25, 0));
+                    const auto mod =
+                        (rand() % 160 + 192 * (.65f + 8 / dist1 + 1 / dist2 + 4 / dist3)) / 255.0f;
+                    auto saturate = [](float x) { return x > 255 ? 255u : uint32_t(x); };
+                    const auto r = saturate(((c >> 16) & 0xff) * mod),
+                               g = saturate(((c >> 8) & 0xff) * mod),
+                               b = saturate(((c >> 0) & 0xff) * mod);
+                    return (c & 0xff000000) + (r << 16) + (g << 8) + b;
+                };
+                for (auto& v : vs) v.C = modifyColor(v.C, v.Pos);
+            }
+            Vertex vs[4];
         };
+
         auto addQuads = [this](initializer_list<Quad> qs) {
             auto addTriangle = [this](const initializer_list<Vertex>& vs) {
                 for (const auto& v : vs) {
@@ -279,52 +298,35 @@ struct TriangleSet {
             };
 
             for (const auto& q : qs) {
-                addTriangle({q.v0, q.v1, q.v2});
-                addTriangle({q.v3, q.v2, q.v1});
+                addTriangle({q.vs[0], q.vs[1], q.vs[2]});
+                addTriangle({q.vs[3], q.vs[2], q.vs[1]});
             }
         };
 
-        auto modifyColor = [](DWORD c, XMFLOAT3 pos) {
-            const auto v = XMLoadFloat3(&pos);
-            auto length = [](const auto& v) { return XMVectorGetX(XMVector3Length(v)); };
-            const auto dist1 = length(XMVectorAdd(v, XMVectorSet(2.0f, -4.0f, 2.0f, 0.0f)));
-            const auto dist2 = length(XMVectorAdd(v, XMVectorSet(-3.0f, -4.0f, 3.0f, 0.0f)));
-            const auto dist3 = length(XMVectorAdd(v, XMVectorSet(4.0f, -3.0f, -25.0f, 0.0f)));
-            int bri = rand() % 160;
-            float r = ((c >> 16) & 0xff) *
-                      (bri + 192.0f * (0.65f + 8 / dist1 + 1 / dist2 + 4 / dist3)) / 255.0f;
-            float g = ((c >> 8) & 0xff) *
-                      (bri + 192.0f * (0.65f + 8 / dist1 + 1 / dist2 + 4 / dist3)) / 255.0f;
-            float b = ((c >> 0) & 0xff) *
-                      (bri + 192.0f * (0.65f + 8 / dist1 + 1 / dist2 + 4 / dist3)) / 255.0f;
-            return ((c & 0xff000000) + ((r > 255 ? 255 : (DWORD)r) << 16) +
-                    ((g > 255 ? 255 : (DWORD)g) << 8) + (b > 255 ? 255 : (DWORD)b));
-        };
-
-        addQuads({{{{x1, y2, z1}, modifyColor(c, {x1, y2, z1}), z1, x1},
-                   {{x2, y2, z1}, modifyColor(c, {x2, y2, z1}), z1, x2},
-                   {{x1, y2, z2}, modifyColor(c, {x1, y2, z2}), z2, x1},
-                   {{x2, y2, z2}, modifyColor(c, {x2, y2, z2}), z2, x2}},
-                  {{{x2, y1, z1}, modifyColor(c, {x2, y1, z1}), z1, x2},
-                   {{x1, y1, z1}, modifyColor(c, {x1, y1, z1}), z1, x1},
-                   {{x2, y1, z2}, modifyColor(c, {x2, y1, z2}), z2, x2},
-                   {{x1, y1, z2}, modifyColor(c, {x1, y1, z2}), z2, x1}},
-                  {{{x1, y1, z2}, modifyColor(c, {x1, y1, z2}), z2, y1},
-                   {{x1, y1, z1}, modifyColor(c, {x1, y1, z1}), z1, y1},
-                   {{x1, y2, z2}, modifyColor(c, {x1, y2, z2}), z2, y2},
-                   {{x1, y2, z1}, modifyColor(c, {x1, y2, z1}), z1, y2}},
-                  {{{x2, y1, z1}, modifyColor(c, {x2, y1, z1}), z1, y1},
-                   {{x2, y1, z2}, modifyColor(c, {x2, y1, z2}), z2, y1},
-                   {{x2, y2, z1}, modifyColor(c, {x2, y2, z1}), z1, y2},
-                   {{x2, y2, z2}, modifyColor(c, {x2, y2, z2}), z2, y2}},
-                  {{{x1, y1, z1}, modifyColor(c, {x1, y1, z1}), x1, y1},
-                   {{x2, y1, z1}, modifyColor(c, {x2, y1, z1}), x2, y1},
-                   {{x1, y2, z1}, modifyColor(c, {x1, y2, z1}), x1, y2},
-                   {{x2, y2, z1}, modifyColor(c, {x2, y2, z1}), x2, y2}},
-                  {{{x2, y1, z2}, modifyColor(c, {x2, y1, z2}), x2, y1},
-                   {{x1, y1, z2}, modifyColor(c, {x1, y1, z2}), x1, y1},
-                   {{x2, y2, z2}, modifyColor(c, {x2, y2, z2}), x2, y2},
-                   {{x1, y2, z2}, modifyColor(c, {x1, y2, z2}), x1, y2}}});
+        addQuads({{{{x1, y2, z1}, c, z1, x1},
+                   {{x2, y2, z1}, c, z1, x2},
+                   {{x1, y2, z2}, c, z2, x1},
+                   {{x2, y2, z2}, c, z2, x2}},
+                  {{{x2, y1, z1}, c, z1, x2},
+                   {{x1, y1, z1}, c, z1, x1},
+                   {{x2, y1, z2}, c, z2, x2},
+                   {{x1, y1, z2}, c, z2, x1}},
+                  {{{x1, y1, z2}, c, z2, y1},
+                   {{x1, y1, z1}, c, z1, y1},
+                   {{x1, y2, z2}, c, z2, y2},
+                   {{x1, y2, z1}, c, z1, y2}},
+                  {{{x2, y1, z1}, c, z1, y1},
+                   {{x2, y1, z2}, c, z2, y1},
+                   {{x2, y2, z1}, c, z1, y2},
+                   {{x2, y2, z2}, c, z2, y2}},
+                  {{{x1, y1, z1}, c, x1, y1},
+                   {{x2, y1, z1}, c, x2, y1},
+                   {{x1, y2, z1}, c, x1, y2},
+                   {{x2, y2, z1}, c, x2, y2}},
+                  {{{x2, y1, z2}, c, x2, y1},
+                   {{x1, y1, z2}, c, x1, y1},
+                   {{x2, y2, z2}, c, x2, y2},
+                   {{x1, y2, z2}, c, x1, y2}}});
     }
 };
 
@@ -351,9 +353,8 @@ struct Model {
     }
 
     void Render(DirectX11& directx, const XMMATRIX& projView) const {
-        const auto modelMat = XMMatrixMultiply(XMMatrixRotationQuaternion(XMLoadFloat4(&Rot)),
-                                               XMMatrixTranslationFromVector(XMLoadFloat3(&Pos)));
-        const auto mat = XMMatrixMultiply(modelMat, projView);
+        const auto mat = XMMatrixRotationQuaternion(XMLoadFloat4(&Rot)) *
+                         XMMatrixTranslationFromVector(XMLoadFloat3(&Pos)) * projView;
 
         auto map = D3D11_MAPPED_SUBRESOURCE{};
         directx.Context->Map(directx.ConstantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &map);
@@ -390,54 +391,65 @@ struct Scene {
     Scene(ID3D11Device* device, ID3D11DeviceContext* context) {
         auto add = [this](Model* n) { Models.emplace_back(n); };
 
-        TriangleSet cube{ {0.5f, -0.5f, 0.5f, -0.5f, 0.5f, -0.5f, 0xff404040} };
-        add(new Model(device, cube, { 0, 0, 0 }, { 0, 0, 0, 1 },
-            createTexture(device, context, TextureFill::AUTO_CEILING)));
+        enum : uint32_t {
+            DARKER_GREY = 0xff383838,
+            DARK_GREY = 0xff404040,
+            MID_DARK_GREY = 0xff505050,
+            MID_GREY = 0xff808080,
+            RED = 0xffff0000,
+            DARK_YELLOW = 0xff505000,
+            DARK_BLUE = 0xff202050
+        };
 
-        TriangleSet spareCube{{0.1f, -0.1f, 0.1f, -0.1f, +0.1f, -0.1f, 0xffff0000}};
+        TriangleSet cube{{0.5f, -0.5f, 0.5f, -0.5f, 0.5f, -0.5f, DARK_GREY}};
+        add(new Model(device, cube, {0, 0, 0}, {0, 0, 0, 1},
+                      createTexture(device, context, TextureFill::AUTO_CEILING)));
+
+        TriangleSet spareCube{{0.1f, -0.1f, 0.1f, -0.1f, +0.1f, -0.1f, RED}};
         add(new Model(device, spareCube, {0, -10, 0}, {0, 0, 0, 1},
                       createTexture(device, context, TextureFill::AUTO_CEILING)));
 
-        TriangleSet walls{{10.1f, 0.0f, 20.0f, 10.0f, 4.0f, -20.0f, 0xff808080},      // Left Wall
-                          {10.0f, -0.1f, 20.1f, -10.0f, 4.0f, 20.0f, 0xff808080},     // Back Wall
-                          {-10.0f, -0.1f, 20.0f, -10.1f, 4.0f, -20.0f, 0xff808080}};  // Right Wall
+        TriangleSet walls{{10.1f, 0.0f, 20.0f, 10.0f, 4.0f, -20.0f, MID_GREY},      // Left Wall
+                          {10.0f, -0.1f, 20.1f, -10.0f, 4.0f, 20.0f, MID_GREY},     // Back Wall
+                          {-10.0f, -0.1f, 20.0f, -10.1f, 4.0f, -20.0f, MID_GREY}};  // Right Wall
         add(new Model(device, walls, {0, 0, 0}, {0, 0, 0, 1},
                       createTexture(device, context, TextureFill::AUTO_WALL)));
 
         TriangleSet floors{
-            {10.0f, -0.1f, 20.0f, -10.0f, 0.0f, -20.1f, 0xff808080},     // Main floor
-            {15.0f, -6.1f, -18.0f, -15.0f, -6.0f, -30.0f, 0xff808080}};  // Bottom floor
+            {10.0f, -0.1f, 20.0f, -10.0f, 0.0f, -20.1f, MID_GREY},     // Main floor
+            {15.0f, -6.1f, -18.0f, -15.0f, -6.0f, -30.0f, MID_GREY}};  // Bottom floor
         add(new Model(device, floors, {0, 0, 0}, {0, 0, 0, 1},
                       createTexture(device, context, TextureFill::AUTO_FLOOR)));  // Floors
 
-        TriangleSet ceiling{{10.0f, 4.0f, 20.0f, -10.0f, 4.1f, -20.1f, 0xff808080}};
+        TriangleSet ceiling{{10.0f, 4.0f, 20.0f, -10.0f, 4.1f, -20.1f, MID_GREY}};
         add(new Model(device, ceiling, {0, 0, 0}, {0, 0, 0, 1},
                       createTexture(device, context, TextureFill::AUTO_CEILING)));  // Ceiling
 
         TriangleSet furniture{
-            {-9.5f, 0.75f, -3.0f, -10.1f, 2.5f, -3.1f, 0xff383838},  // Right side shelf verticals
-            {-9.5f, 0.95f, -3.7f, -10.1f, 2.75f, -3.8f, 0xff383838},  // Right side shelf
-            {-9.55f, 1.20f, -2.5f, -10.1f, 1.30f, -3.75f, 0xff383838},  // Right side shelf horiz
-            {-9.55f, 2.00f, -3.05f, -10.1f, 2.10f, -4.2f, 0xff383838},  // Right side shelf
-            {-5.0f, 1.1f, -20.0f, -10.0f, 1.2f, -20.1f, 0xff383838},    // Right railing
-            {10.0f, 1.1f, -20.0f, 5.0f, 1.2f, -20.1f, 0xff383838},      // Left railing
-            {1.8f, 0.8f, -1.0f, 0.0f, 0.7f, 0.0f, 0xff505000},          // Table
-            {1.8f, 0.0f, 0.0f, 1.7f, 0.7f, -0.1f, 0xff505000},          // Table Leg
-            {1.8f, 0.7f, -1.0f, 1.7f, 0.0f, -0.9f, 0xff505000},         // Table Leg
-            {0.0f, 0.0f, -1.0f, 0.1f, 0.7f, -0.9f, 0xff505000},         // Table Leg
-            {0.0f, 0.7f, 0.0f, 0.1f, 0.0f, -0.1f, 0xff505000},          // Table Leg
-            {1.4f, 0.5f, 1.1f, 0.8f, 0.55f, 0.5f, 0xff202050},          // Chair Set
-            {1.401f, 0.0f, 1.101f, 1.339f, 1.0f, 1.039f, 0xff202050},   // Chair Leg 1
-            {1.401f, 0.5f, 0.499f, 1.339f, 0.0f, 0.561f, 0xff202050},   // Chair Leg 2
-            {0.799f, 0.0f, 0.499f, 0.861f, 0.5f, 0.561f, 0xff202050},   // Chair Leg 2
-            {0.799f, 1.0f, 1.101f, 0.861f, 0.0f, 1.039f, 0xff202050},   // Chair Leg 2
-            {1.4f, 0.97f, 1.05f, 0.8f, 0.92f, 1.10f, 0xff202050}};      // Chair Back high bar
+            {-9.5f, 0.75f, -3.0f, -10.1f, 2.5f, -3.1f, DARKER_GREY},   // Right side shelf verticals
+            {-9.5f, 0.95f, -3.7f, -10.1f, 2.75f, -3.8f, DARKER_GREY},  // Right side shelf
+            {-9.55f, 1.20f, -2.5f, -10.1f, 1.30f, -3.75f, DARKER_GREY},  // Right side shelf horiz
+            {-9.55f, 2.00f, -3.05f, -10.1f, 2.10f, -4.2f, DARKER_GREY},  // Right side shelf
+            {-5.0f, 1.1f, -20.0f, -10.0f, 1.2f, -20.1f, DARKER_GREY},    // Right railing
+            {10.0f, 1.1f, -20.0f, 5.0f, 1.2f, -20.1f, DARKER_GREY},      // Left railing
+            {1.8f, 0.8f, -1.0f, 0.0f, 0.7f, 0.0f, DARK_YELLOW},          // Table
+            {1.8f, 0.0f, 0.0f, 1.7f, 0.7f, -0.1f, DARK_YELLOW},          // Table Leg
+            {1.8f, 0.7f, -1.0f, 1.7f, 0.0f, -0.9f, DARK_YELLOW},         // Table Leg
+            {0.0f, 0.0f, -1.0f, 0.1f, 0.7f, -0.9f, DARK_YELLOW},         // Table Leg
+            {0.0f, 0.7f, 0.0f, 0.1f, 0.0f, -0.1f, DARK_YELLOW},          // Table Leg
+            {1.4f, 0.5f, 1.1f, 0.8f, 0.55f, 0.5f, DARK_BLUE},            // Chair Set
+            {1.401f, 0.0f, 1.101f, 1.339f, 1.0f, 1.039f, DARK_BLUE},     // Chair Leg 1
+            {1.401f, 0.5f, 0.499f, 1.339f, 0.0f, 0.561f, DARK_BLUE},     // Chair Leg 2
+            {0.799f, 0.0f, 0.499f, 0.861f, 0.5f, 0.561f, DARK_BLUE},     // Chair Leg 2
+            {0.799f, 1.0f, 1.101f, 0.861f, 0.0f, 1.039f, DARK_BLUE},     // Chair Leg 2
+            {1.4f, 0.97f, 1.05f, 0.8f, 0.92f, 1.10f, DARK_BLUE}};        // Chair Back high bar
         for (float f = 5; f <= 9; f += 1)
-            furniture.AddBox(-f, 0.0f, -20.0f, -f - 0.1f, 1.1f, -20.1f, 0xff505050);  // Left Bars
+            furniture.AddBox(-f, 0.0f, -20.0f, -f - 0.1f, 1.1f, -20.1f,
+                             MID_DARK_GREY);  // Left Bars
         for (float f = 5; f <= 9; f += 1)
-            furniture.AddBox(f, 1.1f, -20.0f, f + 0.1f, 0.0f, -20.1f, 0xff505050);  // Right Bars
+            furniture.AddBox(f, 1.1f, -20.0f, f + 0.1f, 0.0f, -20.1f, MID_DARK_GREY);  // Right Bars
         for (float f = 3.0f; f <= 6.6f; f += 0.4f)
-            furniture.AddBox(3, 0.0f, -f, 2.9f, 1.3f, -f - 0.1f, 0xff404040);  // Posts
+            furniture.AddBox(3, 0.0f, -f, 2.9f, 1.3f, -f - 0.1f, DARK_GREY);  // Posts
         add(new Model(
             device, furniture, {0, 0, 0}, {0, 0, 0, 1},
             createTexture(device, context, TextureFill::AUTO_WHITE)));  // Fixtures & furniture
@@ -449,8 +461,7 @@ struct Camera {
     XMVECTOR Rot;
     auto GetViewMatrix() const {
         const auto forward = XMVector3Rotate(XMVectorSet(0, 0, -1, 0), Rot);
-        return XMMatrixLookAtRH(Pos, XMVectorAdd(Pos, forward),
-                                XMVector3Rotate(XMVectorSet(0, 1, 0, 0), Rot));
+        return XMMatrixLookAtRH(Pos, Pos + forward, XMVector3Rotate(XMVectorSet(0, 1, 0, 0), Rot));
     }
 };
 
@@ -682,12 +693,10 @@ ovrResult MainLoop(const Window& window) {
         [&mainCam, &window] {
             const auto forward = XMVector3Rotate(XMVectorSet(0, 0, -0.05f, 0), mainCam.Rot);
             const auto right = XMVector3Rotate(XMVectorSet(0.05f, 0, 0, 0), mainCam.Rot);
-            if (window.Keys['W'] || window.Keys[VK_UP])
-                mainCam.Pos = XMVectorAdd(mainCam.Pos, forward);
-            if (window.Keys['S'] || window.Keys[VK_DOWN])
-                mainCam.Pos = XMVectorSubtract(mainCam.Pos, forward);
-            if (window.Keys['D']) mainCam.Pos = XMVectorAdd(mainCam.Pos, right);
-            if (window.Keys['A']) mainCam.Pos = XMVectorSubtract(mainCam.Pos, right);
+            if (window.Keys['W'] || window.Keys[VK_UP]) mainCam.Pos += forward;
+            if (window.Keys['S'] || window.Keys[VK_DOWN]) mainCam.Pos -= forward;
+            if (window.Keys['D']) mainCam.Pos += right;
+            if (window.Keys['A']) mainCam.Pos -= right;
             static auto Yaw = 0.0f;
             if (window.Keys[VK_LEFT])
                 mainCam.Rot = XMQuaternionRotationRollPitchYaw(0, Yaw += 0.02f, 0);
@@ -698,7 +707,7 @@ ovrResult MainLoop(const Window& window) {
         // Animate the cube
         [&cube = roomScene.Models[0]] {
             static auto cubeClock = 0.0f;
-            cube->Pos = XMFLOAT3(9 * sin(cubeClock), 3, 9 * cos(cubeClock += 0.015f));
+            cube->Pos = {9 * sin(cubeClock), 3, 9 * cos(cubeClock += 0.015f)};
         }();
 
         // Get both eye poses simultaneously, with IPD offset already included.
@@ -729,23 +738,20 @@ ovrResult MainLoop(const Window& window) {
             directx.SetViewport(eyeRenderViewports[eye]);
 
             // Get the pose information in XM format
-            const auto eyeQuat =
-                XMLoadFloat4(begin({XMFLOAT4{&eyeRenderPoses[eye].Orientation.x}}));
-            const auto eyePos =
-                XMLoadFloat3(begin({XMFLOAT3{&eyeRenderPoses[eye].Position.x}}));
+            const auto& ori = eyeRenderPoses[eye].Orientation;
+            const auto eyeQuat = XMVectorSet(ori.x, ori.y, ori.z, ori.w);
+            const auto& pos = eyeRenderPoses[eye].Position;
+            const auto eyePos = XMVectorSet(pos.x, pos.y, pos.z, 0);
 
             // Get view and projection matrices for the eye camera
-            const auto CombinedPos =
-                XMVectorAdd(mainCam.Pos, XMVector3Rotate(eyePos, mainCam.Rot));
-            const auto finalCam =
-                Camera{CombinedPos, XMQuaternionMultiply(eyeQuat, mainCam.Rot)};
+            const auto CombinedPos = mainCam.Pos + XMVector3Rotate(eyePos, mainCam.Rot);
+            const auto finalCam = Camera{CombinedPos, XMQuaternionMultiply(eyeQuat, mainCam.Rot)};
             const auto p = ovrMatrix4f_Projection(eyeRenderDesc[eye].Fov, 0.2f, 1000.0f,
                                                     ovrProjection_RightHanded);
-            const auto proj =
-                XMMatrixTranspose(XMLoadFloat4x4(begin({XMFLOAT4X4{&p.M[0][0]}})));
+            const auto proj = XMMatrixTranspose(XMMATRIX{&p.M[0][0]});
 
             // Render the scene
-            roomScene.Render(directx, XMMatrixMultiply(finalCam.GetViewMatrix(), proj));
+            roomScene.Render(directx, finalCam.GetViewMatrix() * proj);
         }
 
         // Initialize our single full screen Fov layer.
