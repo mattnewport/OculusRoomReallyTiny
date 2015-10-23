@@ -46,6 +46,7 @@ limitations under the License.
 #pragma comment(lib, "dxgi.lib")
 
 using namespace DirectX;
+using namespace std;
 
 #ifndef VALIDATE
 #define VALIDATE(x, msg)                                                  \
@@ -151,10 +152,10 @@ struct DepthBuffer {
     DepthBuffer(ID3D11Device* Device, ovrSizei size) {
         ID3D11Texture2DPtr Tex;
         Device->CreateTexture2D(
-            std::begin({CD3D11_TEXTURE2D_DESC(DXGI_FORMAT_D24_UNORM_S8_UINT, size.w, size.h, 1, 1,
-                                              D3D11_BIND_DEPTH_STENCIL)}),
-            NULL, &Tex);
-        Device->CreateDepthStencilView(Tex, NULL, &TexDsv);
+            data({CD3D11_TEXTURE2D_DESC(DXGI_FORMAT_D24_UNORM_S8_UINT, size.w, size.h, 1, 1,
+                                        D3D11_BIND_DEPTH_STENCIL)}),
+            nullptr, &Tex);
+        Device->CreateDepthStencilView(Tex, nullptr, &TexDsv);
     }
 };
 
@@ -176,22 +177,23 @@ struct DirectX11 {
     void SetAndClearRenderTarget(ID3D11RenderTargetView* rendertarget,
                                  DepthBuffer* depthbuffer) const {
         Context->OMSetRenderTargets(1, &rendertarget, depthbuffer->TexDsv);
-        Context->ClearRenderTargetView(rendertarget, std::begin({0.0f, 0.0f, 0.0f, 0.0f}));
+        Context->ClearRenderTargetView(rendertarget, data({0.0f, 0.0f, 0.0f, 0.0f}));
         Context->ClearDepthStencilView(depthbuffer->TexDsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
-                                       1, 0);
+                                       1.0f, 0);
     }
 
     void SetViewport(const ovrRecti& vp) const {
         Context->RSSetViewports(
-            1, std::begin({D3D11_VIEWPORT{float(vp.Pos.x), float(vp.Pos.y), float(vp.Size.w),
-                                          float(vp.Size.h), 0.0f, 1.0f}}));
+            1, data({D3D11_VIEWPORT{float(vp.Pos.x), float(vp.Pos.y), float(vp.Size.w),
+                                    float(vp.Size.h), 0.0f, 1.0f}}));
     }
 };
 
 enum class TextureFill { AUTO_WHITE, AUTO_WALL, AUTO_FLOOR, AUTO_CEILING };
 
 auto createTexture(ID3D11Device* device, ID3D11DeviceContext* context, TextureFill texFill) {
-    auto texDesc = CD3D11_TEXTURE2D_DESC(DXGI_FORMAT_R8G8B8A8_UNORM, 256, 256, 1, 8,
+    constexpr auto widthHeight = 256;
+    auto texDesc = CD3D11_TEXTURE2D_DESC(DXGI_FORMAT_R8G8B8A8_UNORM, widthHeight, widthHeight, 1, 0,
                                          D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET);
     texDesc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
 
@@ -201,33 +203,35 @@ auto createTexture(ID3D11Device* device, ID3D11DeviceContext* context, TextureFi
     device->CreateShaderResourceView(tex, nullptr, &texSrv);
 
     // Fill texture with requested pattern
-    std::vector<DWORD> pix(texDesc.Width * texDesc.Height);
-    for (auto y = 0u; y < texDesc.Height; ++y)
-        for (auto x = 0u; x < texDesc.Width; ++x) {
-            auto& curr = pix[y * texDesc.Width + x];
+    enum : uint32_t {
+        DARK_GREY = 0xff3c3c3c,
+        MID_GREY = 0xff505050,
+        LIGHT_GREY = 0xffb4b4b4,
+        WHITE = 0xffffffff
+    };
+    uint32_t pix[widthHeight * widthHeight] = {};
+    for (auto y = 0u; y < widthHeight; ++y)
+        for (auto x = 0u; x < widthHeight; ++x) {
+            auto& curr = pix[y * widthHeight + x];
             switch (texFill) {
-                case (TextureFill::AUTO_WALL):
-                    curr =
-                        (((y / 4 & 15) == 0) ||
-                         (((x / 4 & 15) == 0) && ((((x / 4 & 31) == 0) ^ ((y / 4 >> 4) & 1)) == 0)))
-                            ? 0xff3c3c3c
-                            : 0xffb4b4b4;
-                    break;
+                case (TextureFill::AUTO_WALL): {
+                    const bool a = y / 4 % 16 == 0, b = x / 4 % 16 == 0;
+                    const bool c = x / 4 % 32 != 0, d = y / 64 % 2 == 0;
+                    curr = a || b && c ^ d ? DARK_GREY : LIGHT_GREY;
+                } break;
                 case (TextureFill::AUTO_FLOOR):
-                    curr = (((x >> 7) ^ (y >> 7)) & 1) ? 0xffb4b4b4 : 0xff505050;
+                    curr = x / 128 ^ y / 128 ? LIGHT_GREY : MID_GREY;
                     break;
                 case (TextureFill::AUTO_CEILING):
-                    curr = (x / 4 == 0 || y / 4 == 0) ? 0xff505050 : 0xffb4b4b4;
+                    curr = x / 4 == 0 || y / 4 == 0 ? MID_GREY : LIGHT_GREY;
                     break;
                 case (TextureFill::AUTO_WHITE):
-                    curr = 0xffffffff;
-                    break;
                 default:
-                    curr = 0xffffffff;
+                    curr = WHITE;
                     break;
             }
         }
-    context->UpdateSubresource(tex, 0, nullptr, pix.data(), texDesc.Width * 4, 0);
+    context->UpdateSubresource(tex, 0, nullptr, data(pix), widthHeight * sizeof(pix[0]), 0);
     context->GenerateMips(texSrv);
 
     return texSrv;
@@ -235,30 +239,30 @@ auto createTexture(ID3D11Device* device, ID3D11DeviceContext* context, TextureFi
 
 struct Vertex {
     XMFLOAT3 Pos;
-    DWORD C;
+    uint32_t C;
     float U, V;
 };
 
 struct TriangleSet {
-    std::vector<Vertex> Vertices;
-    std::vector<short> Indices;
+    vector<Vertex> Vertices;
+    vector<uint16_t> Indices;
 
     template<typename Tuple, size_t... Is>
-    void callAddBox(const Tuple& t, std::index_sequence<Is...>) {
-        AddBox(std::get<Is>(t)...);
+    void callAddBox(const Tuple& t, index_sequence<Is...>) {
+        AddBox(get<Is>(t)...);
     }
 
     struct Box {
         Box(float x1, float y1, float z1, float x2, float y2, float z2, DWORD c)
-            : t{std::make_tuple(x1, y1, z1, x2, y2, z2, c)} {}
-        std::tuple<float, float, float, float, float, float, DWORD> t;
+            : t{make_tuple(x1, y1, z1, x2, y2, z2, c)} {}
+        tuple<float, float, float, float, float, float, DWORD> t;
     };
 
     TriangleSet() = default;
     TriangleSet(
-        std::initializer_list<Box> boxes) {
+        initializer_list<Box> boxes) {
         for (const auto& b : boxes) {
-            callAddBox(b.t, std::make_index_sequence<std::tuple_size<decltype(b.t)>::value>{});
+            callAddBox(b.t, make_index_sequence<tuple_size<decltype(b.t)>::value>{});
         }
     }
 
@@ -266,8 +270,8 @@ struct TriangleSet {
         struct Quad {
             Vertex v0, v1, v2, v3;
         };
-        auto addQuads = [this](std::initializer_list<Quad> qs) {
-            auto addTriangle = [this](const std::initializer_list<Vertex>& vs) {
+        auto addQuads = [this](initializer_list<Quad> qs) {
+            auto addTriangle = [this](const initializer_list<Vertex>& vs) {
                 for (const auto& v : vs) {
                     Indices.push_back(static_cast<short>(size(Vertices)));
                     Vertices.push_back(v);
@@ -330,20 +334,20 @@ struct Model {
     ID3D11ShaderResourceViewPtr Tex;
     ID3D11BufferPtr VertexBuffer;
     ID3D11BufferPtr IndexBuffer;
-    std::size_t NumIndices;
+    size_t NumIndices;
 
     Model(ID3D11Device* device, const TriangleSet& t, XMFLOAT3 argPos, XMFLOAT4 argRot,
           ID3D11ShaderResourceView* tex)
         : Pos(argPos), Rot(argRot), Tex(tex), NumIndices{size(t.Indices)} {
         device->CreateBuffer(
-            std::begin({CD3D11_BUFFER_DESC{UINT(size(t.Vertices) * sizeof(t.Vertices.back())),
-                                           D3D11_BIND_VERTEX_BUFFER}}),
-            std::begin({D3D11_SUBRESOURCE_DATA{t.Vertices.data(), 0, 0}}), &VertexBuffer);
+            begin({CD3D11_BUFFER_DESC{UINT(size(t.Vertices) * sizeof(t.Vertices.back())),
+                                      D3D11_BIND_VERTEX_BUFFER}}),
+            begin({D3D11_SUBRESOURCE_DATA{t.Vertices.data(), 0, 0}}), &VertexBuffer);
 
         device->CreateBuffer(
-            std::begin({CD3D11_BUFFER_DESC{UINT(size(t.Indices) * sizeof(t.Indices.back())),
-                                           D3D11_BIND_INDEX_BUFFER}}),
-            std::begin({D3D11_SUBRESOURCE_DATA{t.Indices.data(), 0, 0}}), &IndexBuffer);
+            begin({CD3D11_BUFFER_DESC{UINT(size(t.Indices) * sizeof(t.Indices.back())),
+                                      D3D11_BIND_INDEX_BUFFER}}),
+            begin({D3D11_SUBRESOURCE_DATA{t.Indices.data(), 0, 0}}), &IndexBuffer);
     }
 
     void Render(DirectX11& directx, const XMMATRIX& projView) const {
@@ -360,8 +364,8 @@ struct Model {
         directx.Context->IASetIndexBuffer(IndexBuffer, DXGI_FORMAT_R16_UINT, 0);
         const auto vbs = {VertexBuffer.GetInterfacePtr()};
         directx.Context->IASetVertexBuffers(0, UINT(size(vbs)), begin(vbs),
-                                            std::begin({UINT(sizeof(Vertex))}),
-                                            std::begin({UINT(0)}));
+                                            begin({UINT(sizeof(Vertex))}),
+                                            begin({UINT(0)}));
         directx.Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
         directx.Context->VSSetShader(directx.D3DVert, nullptr, 0);
@@ -377,7 +381,7 @@ struct Model {
 };
 
 struct Scene {
-    std::vector<std::unique_ptr<Model>> Models;
+    vector<unique_ptr<Model>> Models;
 
     void Render(DirectX11& directx, const XMMATRIX& projView) const {
         for (const auto& model : Models) model->Render(directx, projView);
@@ -453,7 +457,7 @@ struct Camera {
 // ovrSwapTextureSet wrapper class that also maintains the render target views needed for D3D11
 // rendering.
 struct OculusTexture {
-    std::unique_ptr<ovrSwapTextureSet, std::function<void(ovrSwapTextureSet*)>> TextureSet;
+    unique_ptr<ovrSwapTextureSet, function<void(ovrSwapTextureSet*)>> TextureSet;
     ID3D11RenderTargetViewPtr TexRtvs[2];
 
     OculusTexture(ID3D11Device* device, ovrSession session, ovrSizei size)
@@ -462,7 +466,7 @@ struct OculusTexture {
                   // Create and validate the swap texture set and stash it in unique_ptr
                   ovrSwapTextureSet* ts{};
                   auto result = ovr_CreateSwapTextureSetD3D11(
-                      session, device, std::begin({CD3D11_TEXTURE2D_DESC(
+                      session, device, begin({CD3D11_TEXTURE2D_DESC(
                                        DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, size.w, size.h, 1, 1,
                                        D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET)}),
                       ovrSwapTextureSetD3D11_Typeless, &ts);
@@ -473,12 +477,12 @@ struct OculusTexture {
               // unique_ptr Deleter lambda to clean up the swap texture set
               [session](ovrSwapTextureSet* ts) { ovr_DestroySwapTextureSet(session, ts); }} {
         // Create render target views for each of the textures in the swap texture set
-        std::transform(TextureSet->Textures, TextureSet->Textures + TextureSet->TextureCount,
+        transform(TextureSet->Textures, TextureSet->Textures + TextureSet->TextureCount,
                        TexRtvs, [device](auto tex) {
                            ID3D11RenderTargetViewPtr rtv;
                            device->CreateRenderTargetView(
                                reinterpret_cast<ovrD3D11Texture&>(tex).D3D11.pTexture,
-                               std::begin({CD3D11_RENDER_TARGET_VIEW_DESC{
+                               begin({CD3D11_RENDER_TARGET_VIEW_DESC{
                                    D3D11_RTV_DIMENSION_TEXTURE2D, DXGI_FORMAT_R8G8B8A8_UNORM}}),
                                &rtv);
                            return rtv;
@@ -520,7 +524,7 @@ DirectX11::DirectX11(HWND window, int vpW, int vpH, const LUID* pLuid)
     }();
     VALIDATE(SUCCEEDED(D3D11CreateDeviceAndSwapChain(
                  adapter, DriverType, nullptr, createFlags, nullptr, 0, D3D11_SDK_VERSION,
-                 std::begin({DXGI_SWAP_CHAIN_DESC{
+                 begin({DXGI_SWAP_CHAIN_DESC{
                      {UINT(WinSizeW), UINT(WinSizeH), {}, DXGI_FORMAT_R8G8B8A8_UNORM},  // Buffer
                      {1},  // SampleDesc
                      DXGI_USAGE_RENDER_TARGET_OUTPUT,
@@ -538,7 +542,7 @@ DirectX11::DirectX11(HWND window, int vpW, int vpH, const LUID* pLuid)
 
     // Buffer for shader constants
     Device->CreateBuffer(
-        std::begin({CD3D11_BUFFER_DESC(sizeof(XMMATRIX), D3D11_BIND_CONSTANT_BUFFER,
+        begin({CD3D11_BUFFER_DESC(sizeof(XMMATRIX), D3D11_BIND_CONSTANT_BUFFER,
                                        D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE)}),
         nullptr, &ConstantBuffer);
     auto buffs = {ConstantBuffer.GetInterfacePtr()};
@@ -553,22 +557,22 @@ DirectX11::DirectX11(HWND window, int vpW, int vpH, const LUID* pLuid)
     // Set up render states
     // Create and set rasterizer state
     ID3D11RasterizerStatePtr rss;
-    Device->CreateRasterizerState(std::begin({CD3D11_RASTERIZER_DESC{D3D11_DEFAULT}}), &rss);
+    Device->CreateRasterizerState(begin({CD3D11_RASTERIZER_DESC{D3D11_DEFAULT}}), &rss);
     Context->RSSetState(rss);
 
     // Create and set depth stencil state
     ID3D11DepthStencilStatePtr dss;
-    Device->CreateDepthStencilState(std::begin({CD3D11_DEPTH_STENCIL_DESC{D3D11_DEFAULT}}), &dss);
+    Device->CreateDepthStencilState(begin({CD3D11_DEPTH_STENCIL_DESC{D3D11_DEFAULT}}), &dss);
     Context->OMSetDepthStencilState(dss, 0);
 
     // Create and set blend state
     ID3D11BlendStatePtr bs;
-    Device->CreateBlendState(std::begin({CD3D11_BLEND_DESC{D3D11_DEFAULT}}), &bs);
+    Device->CreateBlendState(begin({CD3D11_BLEND_DESC{D3D11_DEFAULT}}), &bs);
     Context->OMSetBlendState(bs, nullptr, 0xffffffff);
 
     auto compileShader = [](const char* src, const char* target) {
         ID3DBlobPtr blob;
-        D3DCompile(src, std::strlen(src), nullptr, nullptr, nullptr, "main", target, 0, 0, &blob,
+        D3DCompile(src, strlen(src), nullptr, nullptr, nullptr, "main", target, 0, 0, &blob,
                    nullptr);
         return blob;
     };
@@ -593,7 +597,7 @@ DirectX11::DirectX11(HWND window, int vpW, int vpH, const LUID* pLuid)
         {"Color", 0, DXGI_FORMAT_B8G8R8A8_UNORM, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
         {"TexCoord", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0},
     };
-    Device->CreateInputLayout(defaultVertexDesc, UINT(std::size(defaultVertexDesc)),
+    Device->CreateInputLayout(defaultVertexDesc, UINT(size(defaultVertexDesc)),
                               vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &InputLayout);
 
     // Create pixel shader
@@ -619,7 +623,7 @@ DirectX11::DirectX11(HWND window, int vpW, int vpH, const LUID* pLuid)
 
 // Helper to wrap ovr types like ovrSession and ovrTexture* in a unique_ptr with custom create / destroy
 auto create_unique = [](auto createFunc, auto destroyFunc) {
-    return std::unique_ptr<std::remove_reference_t<decltype(*createFunc())>, decltype(destroyFunc)>{
+    return unique_ptr<remove_reference_t<decltype(*createFunc())>, decltype(destroyFunc)>{
         createFunc(), destroyFunc};
 };
 
@@ -660,7 +664,7 @@ ovrResult MainLoop(const Window& window) {
             ovrTexture* mirrorTexture{};
             result = ovr_CreateMirrorTextureD3D11(
                 session, directx.Device,
-                std::begin({CD3D11_TEXTURE2D_DESC(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, directx.WinSizeW,
+                begin({CD3D11_TEXTURE2D_DESC(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, directx.WinSizeW,
                                                   directx.WinSizeH, 1, 1)}),
                 0, &mirrorTexture);
             return mirrorTexture;
@@ -701,14 +705,13 @@ ovrResult MainLoop(const Window& window) {
         const ovrEyeRenderDesc eyeRenderDesc[] = {
             ovr_GetRenderDesc(session.get(), ovrEye_Left, hmdDesc.DefaultEyeFov[ovrEye_Left]),
             ovr_GetRenderDesc(session.get(), ovrEye_Right, hmdDesc.DefaultEyeFov[ovrEye_Right])};
-        
-        double sensorSampleTime = 0.0;
-        const auto eyeRenderPoses = [session = session.get(), &eyeRenderDesc, &sensorSampleTime] {
-            std::array<ovrPosef, 2> res;
+
+        const auto sensorSampleTime = ovr_GetTimeInSeconds();
+        const auto eyeRenderPoses = [session = session.get(), &eyeRenderDesc] {
+            array<ovrPosef, 2> res;
             const auto frameTime = ovr_GetPredictedDisplayTime(session, 0);
             // Keeping sensorSampleTime as close to ovr_GetTrackingState as possible - fed into the
             // layer
-            sensorSampleTime = ovr_GetTimeInSeconds();
             const auto hmdState = ovr_GetTrackingState(session, frameTime, ovrTrue);
             const ovrVector3f HmdToEyeViewOffset[] = {
                 eyeRenderDesc[ovrEye_Left].HmdToEyeViewOffset,
@@ -727,9 +730,9 @@ ovrResult MainLoop(const Window& window) {
 
             // Get the pose information in XM format
             const auto eyeQuat =
-                XMLoadFloat4(std::begin({XMFLOAT4{&eyeRenderPoses[eye].Orientation.x}}));
+                XMLoadFloat4(begin({XMFLOAT4{&eyeRenderPoses[eye].Orientation.x}}));
             const auto eyePos =
-                XMLoadFloat3(std::begin({XMFLOAT3{&eyeRenderPoses[eye].Position.x}}));
+                XMLoadFloat3(begin({XMFLOAT3{&eyeRenderPoses[eye].Position.x}}));
 
             // Get view and projection matrices for the eye camera
             const auto CombinedPos =
@@ -739,7 +742,7 @@ ovrResult MainLoop(const Window& window) {
             const auto p = ovrMatrix4f_Projection(eyeRenderDesc[eye].Fov, 0.2f, 1000.0f,
                                                     ovrProjection_RightHanded);
             const auto proj =
-                XMMatrixTranspose(XMLoadFloat4x4(std::begin({XMFLOAT4X4{&p.M[0][0]}})));
+                XMMatrixTranspose(XMLoadFloat4x4(begin({XMFLOAT4X4{&p.M[0][0]}})));
 
             // Render the scene
             roomScene.Render(directx, XMMatrixMultiply(finalCam.GetViewMatrix(), proj));
