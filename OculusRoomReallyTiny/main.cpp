@@ -187,7 +187,7 @@ struct DirectX11 {
     }
 };
 
-enum class TextureFill { AUTO_WHITE, AUTO_WALL, AUTO_FLOOR, AUTO_CEILING };
+enum class TextureFill { WHITE, WALL, FLOOR, CEILING };
 
 auto createTexture(ID3D11Device* device, ID3D11DeviceContext* context, TextureFill texFill) {
     constexpr auto widthHeight = 256;
@@ -212,18 +212,18 @@ auto createTexture(ID3D11Device* device, ID3D11DeviceContext* context, TextureFi
         for (auto x = 0u; x < widthHeight; ++x) {
             auto& curr = pix[y * widthHeight + x];
             switch (texFill) {
-                case (TextureFill::AUTO_WALL): {
+                case (TextureFill::WALL): {
                     const bool a = y / 4 % 16 == 0, b = x / 4 % 16 == 0;
                     const bool c = x / 4 % 32 != 0, d = y / 64 % 2 == 0;
                     curr = a || b && c ^ d ? DARK_GREY : LIGHT_GREY;
                 } break;
-                case (TextureFill::AUTO_FLOOR):
+                case (TextureFill::FLOOR):
                     curr = x / 128 ^ y / 128 ? LIGHT_GREY : MID_GREY;
                     break;
-                case (TextureFill::AUTO_CEILING):
+                case (TextureFill::CEILING):
                     curr = x / 4 == 0 || y / 4 == 0 ? MID_GREY : LIGHT_GREY;
                     break;
-                case (TextureFill::AUTO_WHITE):
+                case (TextureFill::WHITE):
                 default:
                     curr = WHITE;
                     break;
@@ -255,55 +255,49 @@ struct TriangleSet {
     }
 
     void AddBox(const Box& b) {
-        XMFLOAT3 ps[1 << 3];
-        for (int i = 0; i < int(std::size(ps)); ++i) {
-            ps[i] = XMFLOAT3{i & (1 << 0) ? b.x1 : b.x2, i & (1 << 1) ? b.y1 : b.y2,
-                             i & (1 << 2) ? b.z1 : b.z2};
-        }
-        uint16_t qis[6] = {0, 1, 2, 2, 1, 3};
-
-        const auto selectVertex = [](int face, int vertex) {
-            auto rotr3 = [](int x, int rot) { return x >> rot | (x << (3 - rot)) & 7; };
-            const auto fixed = face % 3;
-            const auto offset = (1 << fixed) * (face / 3);
-            return (rotr3(vertex, 2 - fixed) + offset) & 7;
-        };
-
         const auto modifyColor = [](uint32_t c, XMFLOAT3 pos) {
-            auto length = [](const auto& v) { return XMVectorGetX(XMVector3Length(v)); };
+            const auto length = [](const auto& v) { return XMVectorGetX(XMVector3Length(v)); };
             const auto v = XMLoadFloat3(&pos);
             const auto dist1 = length(v + XMVectorSet(2, -4, 2, 0)),
                        dist2 = length(v + XMVectorSet(-3, -4, 3, 0)),
                        dist3 = length(v + XMVectorSet(4, -3, -25, 0));
             const auto mod =
                 (rand() % 160 + 192 * (.65f + 8 / dist1 + 1 / dist2 + 4 / dist3)) / 255.0f;
-            auto saturate = [](float x) { return x > 255 ? 255u : uint32_t(x); };
+            const auto saturate = [](float x) { return x > 255 ? 255u : uint32_t(x); };
             const auto r = saturate(((c >> 16) & 0xff) * mod),
                        g = saturate(((c >> 8) & 0xff) * mod), b = saturate(((c >> 0) & 0xff) * mod);
             return (c & 0xff000000) + (r << 16) + (g << 8) + b;
         };
 
-        Vertex vs[24];
-        uint16_t is[36];
+        XMFLOAT3 ps[8];
+        for (int i = 0; i < int(size(ps)); ++i) {
+            ps[i] = XMFLOAT3{i & (1 << 0) ? b.x1 : b.x2, i & (1 << 1) ? b.y1 : b.y2,
+                             i & (1 << 2) ? b.z1 : b.z2};
+        }
+        uint16_t is[6] = {0, 1, 2, 2, 1, 3};
+
+        const auto baseVertexIdx = Vertices.size();
+        Vertices.resize(Vertices.size() + 24);
+        const auto baseIndex = Indices.size();
+        Indices.resize(Indices.size() + 36);
         for (int face = 0; face < 6; ++face) {
-            for (int k = 0; k < 4; ++k) {
-                const auto p = ps[selectVertex(face, k)];
-                const auto idx = 4 * face + k;
+            const auto faceDiv3 = face / 3, faceMod3 = face % 3;
+            for (int v = 0; v < 4; ++v) {
+                const auto rotr3 = [](int x, int rot) { return x >> rot | (x << (3 - rot)) & 7; };
+                const auto p = ps[(rotr3(v, 2 - faceMod3) + (1 << faceMod3) * faceDiv3) & 7];
                 XMFLOAT2 uvs[] = {{p.z, p.y}, {p.z, p.x}, {p.x, p.y}};
-                vs[idx] = Vertex{p, modifyColor(b.c, p), uvs[face % 3]};
+                const auto idx = baseVertexIdx + 4 * face + v;
+                Vertices[idx] = Vertex{p, modifyColor(b.c, p), uvs[faceMod3]};
             }
-            const auto plusOffset = [o = 4 * face + Vertices.size()](uint16_t x) {
+            const auto plusOffset = [o = 4 * face + baseVertexIdx](uint16_t x) {
                 return uint16_t(x + o);
             };
-            const auto outIt = stdext::make_unchecked_array_iterator(is + 6 * face);
-            if (face / 3)
-                transform(begin(qis), end(qis), outIt, plusOffset);
+            const auto outIt = next(begin(Indices) + baseIndex, 6 * face);
+            if (faceDiv3)
+                transform(begin(is), end(is), outIt, plusOffset);
             else
-                transform(rbegin(qis), rend(qis), outIt, plusOffset);
+                transform(rbegin(is), rend(is), outIt, plusOffset);
         }
-
-        Vertices.insert(end(Vertices), begin(vs), end(vs));
-        Indices.insert(end(Indices), begin(is), end(is));
     }
 };
 
@@ -326,31 +320,30 @@ struct Model {
             data({D3D11_SUBRESOURCE_DATA{t.Indices.data()}}), &IndexBuffer);
     }
 
-    void Render(DirectX11& directx, const XMMATRIX& projView) const {
+    void Render(DirectX11& dx, const XMMATRIX& projView) const {
         const auto mat = XMMatrixTranslationFromVector(XMLoadFloat3(&Pos)) * projView;
 
         auto map = D3D11_MAPPED_SUBRESOURCE{};
-        directx.Context->Map(directx.ConstantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &map);
+        dx.Context->Map(dx.ConstantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &map);
         memcpy(map.pData, &mat, sizeof(mat));
-        directx.Context->Unmap(directx.ConstantBuffer, 0);
+        dx.Context->Unmap(dx.ConstantBuffer, 0);
 
-        directx.Context->IASetInputLayout(directx.InputLayout);
-        directx.Context->IASetIndexBuffer(IndexBuffer, DXGI_FORMAT_R16_UINT, 0);
+        dx.Context->IASetInputLayout(dx.InputLayout);
+        dx.Context->IASetIndexBuffer(IndexBuffer, DXGI_FORMAT_R16_UINT, 0);
         const auto vbs = {VertexBuffer.GetInterfacePtr()};
-        directx.Context->IASetVertexBuffers(0, UINT(size(vbs)),
-                                            data({VertexBuffer.GetInterfacePtr()}),
-                                            data({UINT(sizeof(Vertex))}), data({0u}));
-        directx.Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        dx.Context->IASetVertexBuffers(0, UINT(size(vbs)), data({VertexBuffer.GetInterfacePtr()}),
+                                       data({UINT(sizeof(Vertex))}), data({0u}));
+        dx.Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-        directx.Context->VSSetShader(directx.D3DVert, nullptr, 0);
-        directx.Context->PSSetShader(directx.D3DPix, nullptr, 0);
+        dx.Context->VSSetShader(dx.D3DVert, nullptr, 0);
+        dx.Context->PSSetShader(dx.D3DPix, nullptr, 0);
 
-        const auto samplerStates = {directx.SamplerState.GetInterfacePtr()};
-        directx.Context->PSSetSamplers(0, UINT(size(samplerStates)), data(samplerStates));
+        const auto samplerStates = {dx.SamplerState.GetInterfacePtr()};
+        dx.Context->PSSetSamplers(0, UINT(size(samplerStates)), data(samplerStates));
 
         const auto texSrvs = {Tex.GetInterfacePtr()};
-        directx.Context->PSSetShaderResources(0, UINT(size(texSrvs)), data(texSrvs));
-        directx.Context->DrawIndexed(UINT(NumIndices), 0, 0);
+        dx.Context->PSSetShaderResources(0, UINT(size(texSrvs)), data(texSrvs));
+        dx.Context->DrawIndexed(UINT(NumIndices), 0, 0);
     }
 };
 
@@ -363,69 +356,64 @@ struct Scene {
 
     Scene(ID3D11Device* device, ID3D11DeviceContext* context) {
         auto add = [this, device](auto&&... xs) {
-            Models.push_back(make_unique<Model>(device, xs...));
+            Models.push_back(make_unique<Model>(device, forward<decltype(xs)>(xs)...));
         };
 
         enum : uint32_t {
-            DARKER_GREY = 0xff383838,
-            DARK_GREY = 0xff404040,
-            MID_DARK_GREY = 0xff505050,
-            MID_GREY = 0xff808080,
+            DARK_GRAY = 0xff404040,
+            DIM_GRAY = 0xff696969,
+            GRAY = 0xff808080,
             RED = 0xffff0000,
-            DARK_YELLOW = 0xff505000,
-            DARK_BLUE = 0xff202050
+            YELLOW = 0xff505000,
+            BLUE = 0xff202050
         };
 
-        TriangleSet cube{{0.5f, -0.5f, 0.5f, -0.5f, 0.5f, -0.5f, DARK_GREY}};
-        add(cube, XMFLOAT3{0, 0, 0}, createTexture(device, context, TextureFill::AUTO_CEILING));
+        TriangleSet cube{{0.5f, -0.5f, 0.5f, -0.5f, 0.5f, -0.5f, DARK_GRAY}};
+        add(cube, XMFLOAT3{0, 0, 0}, createTexture(device, context, TextureFill::CEILING));
 
         TriangleSet spareCube{{0.1f, -0.1f, 0.1f, -0.1f, +0.1f, -0.1f, RED}};
-        add(spareCube, XMFLOAT3{0, -10, 0},
-            createTexture(device, context, TextureFill::AUTO_CEILING));
+        add(spareCube, XMFLOAT3{0, -10, 0}, createTexture(device, context, TextureFill::CEILING));
 
-        TriangleSet walls{{10.1f, 0.0f, 20.0f, 10.0f, 4.0f, -20.0f, MID_GREY},      // Left Wall
-                          {10.0f, -0.1f, 20.1f, -10.0f, 4.0f, 20.0f, MID_GREY},     // Back Wall
-                          {-10.0f, -0.1f, 20.0f, -10.1f, 4.0f, -20.0f, MID_GREY}};  // Right Wall
-        add(walls, XMFLOAT3{0, 0, 0}, createTexture(device, context, TextureFill::AUTO_WALL));
+        TriangleSet walls{{10.1f, 0.0f, 20.0f, 10.0f, 4.0f, -20.0f, GRAY},      // Left Wall
+                          {10.0f, -0.1f, 20.1f, -10.0f, 4.0f, 20.0f, GRAY},     // Back Wall
+                          {-10.0f, -0.1f, 20.0f, -10.1f, 4.0f, -20.0f, GRAY}};  // Right Wall
+        add(walls, XMFLOAT3{0, 0, 0}, createTexture(device, context, TextureFill::WALL));
 
-        TriangleSet floors{
-            {10.0f, -0.1f, 20.0f, -10.0f, 0.0f, -20.1f, MID_GREY},     // Main floor
-            {15.0f, -6.1f, -18.0f, -15.0f, -6.0f, -30.0f, MID_GREY}};  // Bottom floor
+        TriangleSet floors{{10.0f, -0.1f, 20.0f, -10.0f, 0.0f, -20.1f, GRAY},     // Main floor
+                           {15.0f, -6.1f, -18.0f, -15.0f, -6.0f, -30.0f, GRAY}};  // Bottom floor
         add(floors, XMFLOAT3{0, 0, 0},
-            createTexture(device, context, TextureFill::AUTO_FLOOR));  // Floors
+            createTexture(device, context, TextureFill::FLOOR));  // Floors
 
-        TriangleSet ceiling{{10.0f, 4.0f, 20.0f, -10.0f, 4.1f, -20.1f, MID_GREY}};
+        TriangleSet ceiling{{10.0f, 4.0f, 20.0f, -10.0f, 4.1f, -20.1f, GRAY}};
         add(ceiling, XMFLOAT3{0, 0, 0},
-            createTexture(device, context, TextureFill::AUTO_CEILING));  // Ceiling
+            createTexture(device, context, TextureFill::CEILING));  // Ceiling
 
         TriangleSet furniture{
-            {-9.5f, 0.75f, -3.0f, -10.1f, 2.5f, -3.1f, DARKER_GREY},   // Right side shelf verticals
-            {-9.5f, 0.95f, -3.7f, -10.1f, 2.75f, -3.8f, DARKER_GREY},  // Right side shelf
-            {-9.55f, 1.20f, -2.5f, -10.1f, 1.30f, -3.75f, DARKER_GREY},  // Right side shelf horiz
-            {-9.55f, 2.00f, -3.05f, -10.1f, 2.10f, -4.2f, DARKER_GREY},  // Right side shelf
-            {-5.0f, 1.1f, -20.0f, -10.0f, 1.2f, -20.1f, DARKER_GREY},    // Right railing
-            {10.0f, 1.1f, -20.0f, 5.0f, 1.2f, -20.1f, DARKER_GREY},      // Left railing
-            {1.8f, 0.8f, -1.0f, 0.0f, 0.7f, 0.0f, DARK_YELLOW},          // Table
-            {1.8f, 0.0f, 0.0f, 1.7f, 0.7f, -0.1f, DARK_YELLOW},          // Table Leg
-            {1.8f, 0.7f, -1.0f, 1.7f, 0.0f, -0.9f, DARK_YELLOW},         // Table Leg
-            {0.0f, 0.0f, -1.0f, 0.1f, 0.7f, -0.9f, DARK_YELLOW},         // Table Leg
-            {0.0f, 0.7f, 0.0f, 0.1f, 0.0f, -0.1f, DARK_YELLOW},          // Table Leg
-            {1.4f, 0.5f, 1.1f, 0.8f, 0.55f, 0.5f, DARK_BLUE},            // Chair Set
-            {1.401f, 0.0f, 1.101f, 1.339f, 1.0f, 1.039f, DARK_BLUE},     // Chair Leg 1
-            {1.401f, 0.5f, 0.499f, 1.339f, 0.0f, 0.561f, DARK_BLUE},     // Chair Leg 2
-            {0.799f, 0.0f, 0.499f, 0.861f, 0.5f, 0.561f, DARK_BLUE},     // Chair Leg 2
-            {0.799f, 1.0f, 1.101f, 0.861f, 0.0f, 1.039f, DARK_BLUE},     // Chair Leg 2
-            {1.4f, 0.97f, 1.05f, 0.8f, 0.92f, 1.10f, DARK_BLUE}};        // Chair Back high bar
+            {-9.5f, 0.75f, -3.0f, -10.1f, 2.5f, -3.1f, DARK_GRAY},     // Right side shelf verticals
+            {-9.5f, 0.95f, -3.7f, -10.1f, 2.75f, -3.8f, DARK_GRAY},    // Right side shelf
+            {-9.55f, 1.20f, -2.5f, -10.1f, 1.30f, -3.75f, DARK_GRAY},  // Right side shelf horiz
+            {-9.55f, 2.00f, -3.05f, -10.1f, 2.10f, -4.2f, DARK_GRAY},  // Right side shelf
+            {-5.0f, 1.1f, -20.0f, -10.0f, 1.2f, -20.1f, DARK_GRAY},    // Right railing
+            {10.0f, 1.1f, -20.0f, 5.0f, 1.2f, -20.1f, DARK_GRAY},      // Left railing
+            {1.8f, 0.8f, -1.0f, 0.0f, 0.7f, 0.0f, YELLOW},             // Table
+            {1.8f, 0.0f, 0.0f, 1.7f, 0.7f, -0.1f, YELLOW},             // Table Leg
+            {1.8f, 0.7f, -1.0f, 1.7f, 0.0f, -0.9f, YELLOW},            // Table Leg
+            {0.0f, 0.0f, -1.0f, 0.1f, 0.7f, -0.9f, YELLOW},            // Table Leg
+            {0.0f, 0.7f, 0.0f, 0.1f, 0.0f, -0.1f, YELLOW},             // Table Leg
+            {1.4f, 0.5f, 1.1f, 0.8f, 0.55f, 0.5f, BLUE},               // Chair Set
+            {1.401f, 0.0f, 1.101f, 1.339f, 1.0f, 1.039f, BLUE},        // Chair Leg 1
+            {1.401f, 0.5f, 0.499f, 1.339f, 0.0f, 0.561f, BLUE},        // Chair Leg 2
+            {0.799f, 0.0f, 0.499f, 0.861f, 0.5f, 0.561f, BLUE},        // Chair Leg 2
+            {0.799f, 1.0f, 1.101f, 0.861f, 0.0f, 1.039f, BLUE},        // Chair Leg 2
+            {1.4f, 0.97f, 1.05f, 0.8f, 0.92f, 1.10f, BLUE}};           // Chair Back high bar
         for (float f = 5; f <= 9; f += 1)
-            furniture.AddBox(
-                {-f, 0.0f, -20.0f, -f - 0.1f, 1.1f, -20.1f, MID_DARK_GREY});  // Left Bars
+            furniture.AddBox({-f, 0.0f, -20.0f, -f - 0.1f, 1.1f, -20.1f, DIM_GRAY});  // Left Bars
         for (float f = 5; f <= 9; f += 1)
-            furniture.AddBox(
-                {f, 1.1f, -20.0f, f + 0.1f, 0.0f, -20.1f, MID_DARK_GREY});  // Right Bars
+            furniture.AddBox({f, 1.1f, -20.0f, f + 0.1f, 0.0f, -20.1f, DIM_GRAY});  // Right Bars
         for (float f = 3.0f; f <= 6.6f; f += 0.4f)
-            furniture.AddBox({3, 0.0f, -f, 2.9f, 1.3f, -f - 0.1f, DARK_GREY});  // Posts
+            furniture.AddBox({3, 0.0f, -f, 2.9f, 1.3f, -f - 0.1f, DARK_GRAY});  // Posts
         add(furniture, XMFLOAT3{0, 0, 0},
-            createTexture(device, context, TextureFill::AUTO_WHITE));  // Fixtures & furniture
+            createTexture(device, context, TextureFill::WHITE));  // Fixtures & furniture
     }
 };
 
@@ -445,7 +433,7 @@ struct OculusTexture {
     ID3D11RenderTargetViewPtr TexRtvs[2];
 
     OculusTexture(ID3D11Device* device, ovrSession session, ovrSizei size)
-        : TextureSet{[session, size, device, &texRtv = TexRtvs] {
+        : TextureSet{[session, size, device, &texRtvs = TexRtvs] {
                          // Create and validate the swap texture set and stash it in unique_ptr
                          ovrSwapTextureSet* ts{};
                          VALIDATE(OVR_SUCCESS(ovr_CreateSwapTextureSetD3D11(
@@ -455,7 +443,7 @@ struct OculusTexture {
                                           D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET)}),
                                       ovrSwapTextureSetD3D11_Typeless, &ts)),
                                   "Failed to create SwapTextureSet.");
-                         VALIDATE(size_t(ts->TextureCount) == std::size(texRtv),
+                         VALIDATE(size_t(ts->TextureCount) == std::size(texRtvs),
                                   "TextureCount mismatch.");
                          return ts;
                      }(),
