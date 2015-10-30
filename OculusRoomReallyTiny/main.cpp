@@ -255,61 +255,55 @@ struct TriangleSet {
     }
 
     void AddBox(const Box& b) {
-        struct Quad {
-            Quad(const Vertex& v0, const Vertex& v1, const Vertex& v2, const Vertex& v3)
-                : vs{v0, v1, v2, v3} {
-                auto modifyColor = [](uint32_t c, XMFLOAT3 pos) {
-                    auto length = [](const auto& v) { return XMVectorGetX(XMVector3Length(v)); };
-                    const auto v = XMLoadFloat3(&pos);
-                    const auto dist1 = length(v + XMVectorSet(2, -4, 2, 0)),
-                               dist2 = length(v + XMVectorSet(-3, -4, 3, 0)),
-                               dist3 = length(v + XMVectorSet(4, -3, -25, 0));
-                    const auto mod =
-                        (rand() % 160 + 192 * (.65f + 8 / dist1 + 1 / dist2 + 4 / dist3)) / 255.0f;
-                    auto saturate = [](float x) { return x > 255 ? 255u : uint32_t(x); };
-                    const auto r = saturate(((c >> 16) & 0xff) * mod),
-                               g = saturate(((c >> 8) & 0xff) * mod),
-                               b = saturate(((c >> 0) & 0xff) * mod);
-                    return (c & 0xff000000) + (r << 16) + (g << 8) + b;
-                };
-                for (auto& v : vs) v.c = modifyColor(v.c, v.pos);
-            }
-            Vertex vs[4];
-        } quads[] = {{{{b.x1, b.y2, b.z1}, b.c, {b.z1, b.x1}},
-                      {{b.x2, b.y2, b.z1}, b.c, {b.z1, b.x2}},
-                      {{b.x1, b.y2, b.z2}, b.c, {b.z2, b.x1}},
-                      {{b.x2, b.y2, b.z2}, b.c, {b.z2, b.x2}}},
-                     {{{b.x2, b.y1, b.z1}, b.c, {b.z1, b.x2}},
-                      {{b.x1, b.y1, b.z1}, b.c, {b.z1, b.x1}},
-                      {{b.x2, b.y1, b.z2}, b.c, {b.z2, b.x2}},
-                      {{b.x1, b.y1, b.z2}, b.c, {b.z2, b.x1}}},
-                     {{{b.x1, b.y1, b.z2}, b.c, {b.z2, b.y1}},
-                      {{b.x1, b.y1, b.z1}, b.c, {b.z1, b.y1}},
-                      {{b.x1, b.y2, b.z2}, b.c, {b.z2, b.y2}},
-                      {{b.x1, b.y2, b.z1}, b.c, {b.z1, b.y2}}},
-                     {{{b.x2, b.y1, b.z1}, b.c, {b.z1, b.y1}},
-                      {{b.x2, b.y1, b.z2}, b.c, {b.z2, b.y1}},
-                      {{b.x2, b.y2, b.z1}, b.c, {b.z1, b.y2}},
-                      {{b.x2, b.y2, b.z2}, b.c, {b.z2, b.y2}}},
-                     {{{b.x1, b.y1, b.z1}, b.c, {b.x1, b.y1}},
-                      {{b.x2, b.y1, b.z1}, b.c, {b.x2, b.y1}},
-                      {{b.x1, b.y2, b.z1}, b.c, {b.x1, b.y2}},
-                      {{b.x2, b.y2, b.z1}, b.c, {b.x2, b.y2}}},
-                     {{{b.x2, b.y1, b.z2}, b.c, {b.x2, b.y1}},
-                      {{b.x1, b.y1, b.z2}, b.c, {b.x1, b.y1}},
-                      {{b.x2, b.y2, b.z2}, b.c, {b.x2, b.y2}},
-                      {{b.x1, b.y2, b.z2}, b.c, {b.x1, b.y2}}}};
+        XMFLOAT3 ps[1 << 3];
+        for (int i = 0; i < int(std::size(ps)); ++i) {
+            ps[i] = XMFLOAT3{i & (1 << 0) ? b.x1 : b.x2, i & (1 << 1) ? b.y1 : b.y2,
+                             i & (1 << 2) ? b.z1 : b.z2};
+        }
+        uint16_t qis[6] = {0, 1, 2, 2, 1, 3};
 
-        for (const auto& q : quads) {
-            auto addTriangle = [this](const initializer_list<Vertex>& vs) {
-                for (const auto& v : vs) {
-                    Indices.push_back(static_cast<uint16_t>(size(Vertices)));
-                    Vertices.push_back(v);
-                }
-            };
-            addTriangle({q.vs[0], q.vs[1], q.vs[2]});
-            addTriangle({q.vs[3], q.vs[2], q.vs[1]});
+        const auto selectVertex = [](int face, int vertex) {
+            auto rotr3 = [](int x, int rot) { return x >> rot | (x << (3 - rot)) & 7; };
+            const auto fixed = face % 3;
+            const auto offset = (1 << fixed) * (face / 3);
+            return (rotr3(vertex, 2 - fixed) + offset) & 7;
         };
+
+        const auto modifyColor = [](uint32_t c, XMFLOAT3 pos) {
+            auto length = [](const auto& v) { return XMVectorGetX(XMVector3Length(v)); };
+            const auto v = XMLoadFloat3(&pos);
+            const auto dist1 = length(v + XMVectorSet(2, -4, 2, 0)),
+                       dist2 = length(v + XMVectorSet(-3, -4, 3, 0)),
+                       dist3 = length(v + XMVectorSet(4, -3, -25, 0));
+            const auto mod =
+                (rand() % 160 + 192 * (.65f + 8 / dist1 + 1 / dist2 + 4 / dist3)) / 255.0f;
+            auto saturate = [](float x) { return x > 255 ? 255u : uint32_t(x); };
+            const auto r = saturate(((c >> 16) & 0xff) * mod),
+                       g = saturate(((c >> 8) & 0xff) * mod), b = saturate(((c >> 0) & 0xff) * mod);
+            return (c & 0xff000000) + (r << 16) + (g << 8) + b;
+        };
+
+        Vertex vs[24];
+        uint16_t is[36];
+        for (int face = 0; face < 6; ++face) {
+            for (int k = 0; k < 4; ++k) {
+                const auto p = ps[selectVertex(face, k)];
+                const auto idx = 4 * face + k;
+                XMFLOAT2 uvs[] = {{p.z, p.y}, {p.z, p.x}, {p.x, p.y}};
+                vs[idx] = Vertex{p, modifyColor(b.c, p), uvs[face % 3]};
+            }
+            const auto plusOffset = [o = 4 * face + Vertices.size()](uint16_t x) {
+                return uint16_t(x + o);
+            };
+            const auto outIt = stdext::make_unchecked_array_iterator(is + 6 * face);
+            if (face / 3)
+                transform(begin(qis), end(qis), outIt, plusOffset);
+            else
+                transform(rbegin(qis), rend(qis), outIt, plusOffset);
+        }
+
+        Vertices.insert(end(Vertices), begin(vs), end(vs));
+        Indices.insert(end(Indices), begin(is), end(is));
     }
 };
 
