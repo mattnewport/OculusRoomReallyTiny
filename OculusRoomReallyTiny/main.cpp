@@ -191,8 +191,9 @@ enum class TextureFill { WHITE, WALL, FLOOR, CEILING };
 
 auto createTexture(ID3D11Device* device, ID3D11DeviceContext* context, TextureFill texFill) {
     constexpr auto widthHeight = 256;
-    auto texDesc = CD3D11_TEXTURE2D_DESC(DXGI_FORMAT_R8G8B8A8_UNORM, widthHeight, widthHeight, 1, 0,
-                                         D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET);
+    auto texDesc =
+        CD3D11_TEXTURE2D_DESC(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, widthHeight, widthHeight, 1, 0,
+                              D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET);
     texDesc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
 
     ID3D11Texture2DPtr tex;
@@ -203,21 +204,21 @@ auto createTexture(ID3D11Device* device, ID3D11DeviceContext* context, TextureFi
     // Fill texture with requested pattern
     const auto getColor = [texFill](auto x, auto y) {
         enum : uint32_t {
-            DARK_GRAY = 0xff3c3c3c,
-            DIM_GRAY = 0xff505050,
-            LIGHT_GRAY = 0xffb4b4b4,
+            GRAY = 0xff848484,
+            DARK_GRAY = 0xff969696,
+            LIGHT_GRAY = 0xffd9d9d9,
             WHITE = 0xffffffff
         };
         switch (texFill) {
             case (TextureFill::WALL): {
                 const bool a = y / 4 % 16 == 0, b = x / 4 % 16 == 0;
                 const bool c = x / 4 % 32 != 0, d = y / 64 % 2 == 0;
-                return a || b && c ^ d ? DARK_GRAY : LIGHT_GRAY;
+                return a || b && c ^ d ? GRAY : LIGHT_GRAY;
             }
             case (TextureFill::FLOOR):
-                return x / 128 ^ y / 128 ? LIGHT_GRAY : DIM_GRAY;
+                return x / 128 ^ y / 128 ? LIGHT_GRAY : DARK_GRAY;
             case (TextureFill::CEILING):
-                return x / 4 == 0 || y / 4 == 0 ? DIM_GRAY : LIGHT_GRAY;
+                return x / 4 == 0 || y / 4 == 0 ? DARK_GRAY : LIGHT_GRAY;
         }
         return WHITE;
     };
@@ -353,58 +354,58 @@ struct Scene {
         };
 
         enum : uint32_t {
-            DARK_GRAY = 0xff404040,
-            DIM_GRAY = 0xff696969,
-            GRAY = 0xff808080,
+            GRAY = 0xff404040,
+            DARK_GRAY = 0xff696969,
+            SILVER = 0xff808080,
             RED = 0xffff0000,
             YELLOW = 0xff505000,
             BLUE = 0xff202050
         };
 
-        TriangleSet cube{{0.5f, -0.5f, 0.5f, -0.5f, 0.5f, -0.5f, DARK_GRAY}};
+        TriangleSet cube{{0.5f, -0.5f, 0.5f, -0.5f, 0.5f, -0.5f, GRAY}};
         add(cube, XMFLOAT3{0, 0, 0}, createTexture(device, context, TextureFill::CEILING));
 
         TriangleSet spareCube{{0.1f, -0.1f, 0.1f, -0.1f, +0.1f, -0.1f, RED}};
         add(spareCube, XMFLOAT3{0, -10, 0}, createTexture(device, context, TextureFill::CEILING));
 
-        TriangleSet walls{{10.1f, 0.0f, 20.0f, 10.0f, 4.0f, -20.0f, GRAY},      // Left Wall
-                          {10.0f, -0.1f, 20.1f, -10.0f, 4.0f, 20.0f, GRAY},     // Back Wall
-                          {-10.0f, -0.1f, 20.0f, -10.1f, 4.0f, -20.0f, GRAY}};  // Right Wall
+        TriangleSet walls{{10.1f, 0.0f, 20.0f, 10.0f, 4.0f, -20.0f, SILVER},      // Left Wall
+                          {10.0f, -0.1f, 20.1f, -10.0f, 4.0f, 20.0f, SILVER},     // Back Wall
+                          {-10.0f, -0.1f, 20.0f, -10.1f, 4.0f, -20.0f, SILVER}};  // Right Wall
         add(walls, XMFLOAT3{0, 0, 0}, createTexture(device, context, TextureFill::WALL));
 
-        TriangleSet floors{{10.0f, -0.1f, 20.0f, -10.0f, 0.0f, -20.1f, GRAY},     // Main floor
-                           {15.0f, -6.1f, -18.0f, -15.0f, -6.0f, -30.0f, GRAY}};  // Bottom floor
+        TriangleSet floors{{10.0f, -0.1f, 20.0f, -10.0f, 0.0f, -20.1f, SILVER},     // Main floor
+                           {15.0f, -6.1f, -18.0f, -15.0f, -6.0f, -30.0f, SILVER}};  // Bottom floor
         add(floors, XMFLOAT3{0, 0, 0},
             createTexture(device, context, TextureFill::FLOOR));  // Floors
 
-        TriangleSet ceiling{{10.0f, 4.0f, 20.0f, -10.0f, 4.1f, -20.1f, GRAY}};
+        TriangleSet ceiling{{10.0f, 4.0f, 20.0f, -10.0f, 4.1f, -20.1f, SILVER}};
         add(ceiling, XMFLOAT3{0, 0, 0},
             createTexture(device, context, TextureFill::CEILING));  // Ceiling
 
         TriangleSet furniture{
-            {-9.5f, 0.75f, -3.0f, -10.1f, 2.5f, -3.1f, DARK_GRAY},     // Right side shelf verticals
-            {-9.5f, 0.95f, -3.7f, -10.1f, 2.75f, -3.8f, DARK_GRAY},    // Right side shelf
-            {-9.55f, 1.20f, -2.5f, -10.1f, 1.30f, -3.75f, DARK_GRAY},  // Right side shelf horiz
-            {-9.55f, 2.00f, -3.05f, -10.1f, 2.10f, -4.2f, DARK_GRAY},  // Right side shelf
-            {-5.0f, 1.1f, -20.0f, -10.0f, 1.2f, -20.1f, DARK_GRAY},    // Right railing
-            {10.0f, 1.1f, -20.0f, 5.0f, 1.2f, -20.1f, DARK_GRAY},      // Left railing
-            {1.8f, 0.8f, -1.0f, 0.0f, 0.7f, 0.0f, YELLOW},             // Table
-            {1.8f, 0.0f, 0.0f, 1.7f, 0.7f, -0.1f, YELLOW},             // Table Leg
-            {1.8f, 0.7f, -1.0f, 1.7f, 0.0f, -0.9f, YELLOW},            // Table Leg
-            {0.0f, 0.0f, -1.0f, 0.1f, 0.7f, -0.9f, YELLOW},            // Table Leg
-            {0.0f, 0.7f, 0.0f, 0.1f, 0.0f, -0.1f, YELLOW},             // Table Leg
-            {1.4f, 0.5f, 1.1f, 0.8f, 0.55f, 0.5f, BLUE},               // Chair Set
-            {1.401f, 0.0f, 1.101f, 1.339f, 1.0f, 1.039f, BLUE},        // Chair Leg 1
-            {1.401f, 0.5f, 0.499f, 1.339f, 0.0f, 0.561f, BLUE},        // Chair Leg 2
-            {0.799f, 0.0f, 0.499f, 0.861f, 0.5f, 0.561f, BLUE},        // Chair Leg 2
-            {0.799f, 1.0f, 1.101f, 0.861f, 0.0f, 1.039f, BLUE},        // Chair Leg 2
-            {1.4f, 0.97f, 1.05f, 0.8f, 0.92f, 1.10f, BLUE}};           // Chair Back high bar
+            {-9.5f, 0.75f, -3.0f, -10.1f, 2.5f, -3.1f, GRAY},     // Right side shelf verticals
+            {-9.5f, 0.95f, -3.7f, -10.1f, 2.75f, -3.8f, GRAY},    // Right side shelf
+            {-9.55f, 1.20f, -2.5f, -10.1f, 1.30f, -3.75f, GRAY},  // Right side shelf horiz
+            {-9.55f, 2.00f, -3.05f, -10.1f, 2.10f, -4.2f, GRAY},  // Right side shelf
+            {-5.0f, 1.1f, -20.0f, -10.0f, 1.2f, -20.1f, GRAY},    // Right railing
+            {10.0f, 1.1f, -20.0f, 5.0f, 1.2f, -20.1f, GRAY},      // Left railing
+            {1.8f, 0.8f, -1.0f, 0.0f, 0.7f, 0.0f, YELLOW},        // Table
+            {1.8f, 0.0f, 0.0f, 1.7f, 0.7f, -0.1f, YELLOW},        // Table Leg
+            {1.8f, 0.7f, -1.0f, 1.7f, 0.0f, -0.9f, YELLOW},       // Table Leg
+            {0.0f, 0.0f, -1.0f, 0.1f, 0.7f, -0.9f, YELLOW},       // Table Leg
+            {0.0f, 0.7f, 0.0f, 0.1f, 0.0f, -0.1f, YELLOW},        // Table Leg
+            {1.4f, 0.5f, 1.1f, 0.8f, 0.55f, 0.5f, BLUE},          // Chair Set
+            {1.401f, 0.0f, 1.101f, 1.339f, 1.0f, 1.039f, BLUE},   // Chair Leg 1
+            {1.401f, 0.5f, 0.499f, 1.339f, 0.0f, 0.561f, BLUE},   // Chair Leg 2
+            {0.799f, 0.0f, 0.499f, 0.861f, 0.5f, 0.561f, BLUE},   // Chair Leg 2
+            {0.799f, 1.0f, 1.101f, 0.861f, 0.0f, 1.039f, BLUE},   // Chair Leg 2
+            {1.4f, 0.97f, 1.05f, 0.8f, 0.92f, 1.10f, BLUE}};      // Chair Back high bar
         for (float f = 5; f <= 9; f += 1)
-            furniture.AddBox({-f, 0.0f, -20.0f, -f - 0.1f, 1.1f, -20.1f, DIM_GRAY});  // Left Bars
+            furniture.AddBox({-f, 0.0f, -20.0f, -f - 0.1f, 1.1f, -20.1f, DARK_GRAY});  // Left Bars
         for (float f = 5; f <= 9; f += 1)
-            furniture.AddBox({f, 1.1f, -20.0f, f + 0.1f, 0.0f, -20.1f, DIM_GRAY});  // Right Bars
+            furniture.AddBox({f, 1.1f, -20.0f, f + 0.1f, 0.0f, -20.1f, DARK_GRAY});  // Right Bars
         for (float f = 3.0f; f <= 6.6f; f += 0.4f)
-            furniture.AddBox({3, 0.0f, -f, 2.9f, 1.3f, -f - 0.1f, DARK_GRAY});  // Posts
+            furniture.AddBox({3, 0.0f, -f, 2.9f, 1.3f, -f - 0.1f, GRAY});  // Posts
         add(furniture, XMFLOAT3{0, 0, 0},
             createTexture(device, context, TextureFill::WHITE));  // Fixtures & furniture
     }
