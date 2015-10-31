@@ -201,34 +201,31 @@ auto createTexture(ID3D11Device* device, ID3D11DeviceContext* context, TextureFi
     device->CreateShaderResourceView(tex, nullptr, &texSrv);
 
     // Fill texture with requested pattern
-    enum : uint32_t {
-        DARK_GREY = 0xff3c3c3c,
-        MID_GREY = 0xff505050,
-        LIGHT_GREY = 0xffb4b4b4,
-        WHITE = 0xffffffff
+    const auto getColor = [texFill](auto x, auto y) {
+        enum : uint32_t {
+            DARK_GRAY = 0xff3c3c3c,
+            DIM_GRAY = 0xff505050,
+            LIGHT_GRAY = 0xffb4b4b4,
+            WHITE = 0xffffffff
+        };
+        switch (texFill) {
+            case (TextureFill::WALL): {
+                const bool a = y / 4 % 16 == 0, b = x / 4 % 16 == 0;
+                const bool c = x / 4 % 32 != 0, d = y / 64 % 2 == 0;
+                return a || b && c ^ d ? DARK_GRAY : LIGHT_GRAY;
+            }
+            case (TextureFill::FLOOR):
+                return x / 128 ^ y / 128 ? LIGHT_GRAY : DIM_GRAY;
+            case (TextureFill::CEILING):
+                return x / 4 == 0 || y / 4 == 0 ? DIM_GRAY : LIGHT_GRAY;
+        }
+        return WHITE;
     };
+
     uint32_t pix[widthHeight * widthHeight] = {};
     for (auto y = 0u; y < widthHeight; ++y)
-        for (auto x = 0u; x < widthHeight; ++x) {
-            auto& curr = pix[y * widthHeight + x];
-            switch (texFill) {
-                case (TextureFill::WALL): {
-                    const bool a = y / 4 % 16 == 0, b = x / 4 % 16 == 0;
-                    const bool c = x / 4 % 32 != 0, d = y / 64 % 2 == 0;
-                    curr = a || b && c ^ d ? DARK_GREY : LIGHT_GREY;
-                } break;
-                case (TextureFill::FLOOR):
-                    curr = x / 128 ^ y / 128 ? LIGHT_GREY : MID_GREY;
-                    break;
-                case (TextureFill::CEILING):
-                    curr = x / 4 == 0 || y / 4 == 0 ? MID_GREY : LIGHT_GREY;
-                    break;
-                case (TextureFill::WHITE):
-                default:
-                    curr = WHITE;
-                    break;
-            }
-        }
+        for (auto x = 0u; x < widthHeight; ++x) pix[y * widthHeight + x] = getColor(x, y);
+
     context->UpdateSubresource(tex, 0, nullptr, data(pix), widthHeight * sizeof(pix[0]), 0);
     context->GenerateMips(texSrv);
 
