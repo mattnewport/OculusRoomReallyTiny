@@ -264,34 +264,29 @@ struct TriangleSet {
             return (c & 0xff000000) + (r << 16) + (g << 8) + b;
         };
 
-        XMFLOAT3 ps[8];
-        for (int i = 0; i < int(size(ps)); ++i) {
-            ps[i] = XMFLOAT3{i & (1 << 0) ? b.x1 : b.x2, i & (1 << 1) ? b.y1 : b.y2,
-                             i & (1 << 2) ? b.z1 : b.z2};
-        }
-        uint16_t is[6] = {0, 1, 2, 2, 1, 3};
-
-        const auto baseVertexIdx = Vertices.size();
+        auto baseVertexIdx = Vertices.size();
         Vertices.resize(Vertices.size() + 24);
-        const auto baseIndex = Indices.size();
+        auto baseIndex = Indices.size();
         Indices.resize(Indices.size() + 36);
         for (int face = 0; face < 6; ++face) {
             const auto faceDiv3 = face / 3, faceMod3 = face % 3;
             for (int v = 0; v < 4; ++v) {
+                const auto cv = [&b](int i) {
+                    return XMFLOAT3{i & (1 << 0) ? b.x1 : b.x2, i & (1 << 1) ? b.y1 : b.y2,
+                                    i & (1 << 2) ? b.z1 : b.z2};
+                };
                 const auto rotr3 = [](int x, int rot) { return x >> rot | (x << (3 - rot)) & 7; };
-                const auto p = ps[(rotr3(v, 2 - faceMod3) + (1 << faceMod3) * faceDiv3) & 7];
+                const auto p = cv((rotr3(v, 2 - faceMod3) + (1 << faceMod3) * faceDiv3) & 7);
                 XMFLOAT2 uvs[] = {{p.z, p.y}, {p.z, p.x}, {p.x, p.y}};
-                const auto idx = baseVertexIdx + 4 * face + v;
+                const auto idx = baseVertexIdx + v;
                 Vertices[idx] = Vertex{p, modifyColor(b.c, p), uvs[faceMod3]};
             }
-            const auto plusOffset = [o = 4 * face + baseVertexIdx](uint16_t x) {
-                return uint16_t(x + o);
-            };
-            const auto outIt = next(begin(Indices) + baseIndex, 6 * face);
-            if (faceDiv3)
-                transform(begin(is), end(is), outIt, plusOffset);
-            else
-                transform(rbegin(is), rend(is), outIt, plusOffset);
+            for (int i = 0; i < 6; ++i) {
+                Indices[baseIndex + i] = static_cast<uint16_t>(
+                    baseVertexIdx + abs(faceDiv3 ? 3 - i : i - 2));
+            }
+            baseVertexIdx += 4;
+            baseIndex += 6;
         }
     }
 
