@@ -272,14 +272,12 @@ struct TriangleSet {
             const auto faceDiv3 = face / 3, faceMod3 = face % 3;
             for (int v = 0; v < 4; ++v) {
                 const auto cv = [&b](int i) {
-                    return XMFLOAT3{i & (1 << 0) ? b.x1 : b.x2, i & (1 << 1) ? b.y1 : b.y2,
-                                    i & (1 << 2) ? b.z1 : b.z2};
+                    return XMFLOAT3{i & 1 ? b.x1 : b.x2, i & 2 ? b.y1 : b.y2, i & 4 ? b.z1 : b.z2};
                 };
                 const auto rotr3 = [](int x, int rot) { return x >> rot | (x << (3 - rot)) & 7; };
-                const auto p = cv((rotr3(v, 2 - faceMod3) + (1 << faceMod3) * faceDiv3) & 7);
+                const auto p = cv(rotr3(v | faceDiv3 << 2, 2 - faceMod3));
                 XMFLOAT2 uvs[] = {{p.z, p.y}, {p.z, p.x}, {p.x, p.y}};
-                const auto idx = baseVertexIdx + v;
-                Vertices[idx] = Vertex{p, modifyColor(b.c, p), uvs[faceMod3]};
+                Vertices[baseVertexIdx + v] = Vertex{p, modifyColor(b.c, p), uvs[faceMod3]};
             }
             for (int i = 0; i < 6; ++i) {
                 Indices[baseIndex + i] = static_cast<uint16_t>(
