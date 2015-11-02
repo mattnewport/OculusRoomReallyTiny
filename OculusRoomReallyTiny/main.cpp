@@ -264,27 +264,21 @@ struct TriangleSet {
             return (c & 0xff000000) + (r << 16) + (g << 8) + b;
         };
 
-        auto baseVertexIdx = Vertices.size();
-        Vertices.resize(Vertices.size() + 24);
-        auto baseIndex = Indices.size();
-        Indices.resize(Indices.size() + 36);
         for (int face = 0; face < 6; ++face) {
             const auto faceDiv3 = face / 3, faceMod3 = face % 3;
+            for (int i = 0; i < 6; ++i) {
+                Indices.push_back(
+                    static_cast<uint16_t>(Vertices.size() + abs(faceDiv3 ? 3 - i : i - 2)));
+            }
             for (int v = 0; v < 4; ++v) {
                 const auto cv = [&b](int i) {
                     return XMFLOAT3{i & 1 ? b.x1 : b.x2, i & 2 ? b.y1 : b.y2, i & 4 ? b.z1 : b.z2};
                 };
                 const auto rotr3 = [](int x, int rot) { return x >> rot | (x << (3 - rot)) & 7; };
-                const auto p = cv(rotr3(v | faceDiv3 << 2, 2 - faceMod3));
-                XMFLOAT2 uvs[] = {{p.z, p.y}, {p.z, p.x}, {p.x, p.y}};
-                Vertices[baseVertexIdx + v] = Vertex{p, modifyColor(b.c, p), uvs[faceMod3]};
+                const auto p = cv(rotr3(v | faceDiv3 << 2, faceMod3));
+                XMFLOAT2 uvs[] = {{p.x, p.y}, {p.z, p.x}, {p.z, p.y}};
+                Vertices.push_back({p, modifyColor(b.c, p), uvs[faceMod3]});
             }
-            for (int i = 0; i < 6; ++i) {
-                Indices[baseIndex + i] = static_cast<uint16_t>(
-                    baseVertexIdx + abs(faceDiv3 ? 3 - i : i - 2));
-            }
-            baseVertexIdx += 4;
-            baseIndex += 6;
         }
     }
 
