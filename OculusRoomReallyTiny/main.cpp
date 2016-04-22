@@ -417,41 +417,67 @@ struct Camera {
 // rendering.
 struct OculusTexture {
     OculusTexture(ID3D11Device* device, ovrSession session, ovrSizei size)
-        : TextureSet{[session, size, device, &texRtvs = TexRtvs] {
+        : TextureChain{[session, size, device, &texRtvs = TexRtvs] {
                          // Create and validate the swap texture set and stash it in unique_ptr
-                         ovrSwapTextureSet* ts{};
-                         VALIDATE(OVR_SUCCESS(ovr_CreateSwapTextureSetD3D11(
-                                      session, device,
-                                      data({CD3D11_TEXTURE2D_DESC(
-                                          DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, size.w, size.h, 1, 1,
-                                          D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET)}),
-                                      ovrSwapTextureSetD3D11_Typeless, &ts)),
+                         ovrTextureSwapChainData* ts{};
+                         VALIDATE(OVR_SUCCESS(ovr_CreateTextureSwapChainDX(
+                                      session, device, data({GetTextureSwapChainDesc(size)}), &ts)),
                                   "Failed to create SwapTextureSet.");
-                         VALIDATE(size_t(ts->TextureCount) == std::size(texRtvs),
-                                  "TextureCount mismatch.");
                          return ts;
                      }(),
                      // unique_ptr Deleter lambda to clean up the swap texture set
-                     [session](ovrSwapTextureSet* ts) { ovr_DestroySwapTextureSet(session, ts); }} {
+                     [session](ovrTextureSwapChainData* ts) {
+                         ovr_DestroyTextureSwapChain(session, ts);
+                     }} {
         // Create render target views for each of the textures in the swap texture set
-        transform(TextureSet->Textures, TextureSet->Textures + TextureSet->TextureCount, TexRtvs,
-                  [device](auto tex) {
-                      ID3D11RenderTargetViewPtr rtv;
-                      device->CreateRenderTargetView(
-                          reinterpret_cast<ovrD3D11Texture&>(tex).D3D11.pTexture,
-                          data({CD3D11_RENDER_TARGET_VIEW_DESC{D3D11_RTV_DIMENSION_TEXTURE2D,
-                                                               DXGI_FORMAT_R8G8B8A8_UNORM}}),
-                          &rtv);
-                      return rtv;
-                  });
+        for (int i = 0; i < GetTextureCount(session); ++i) {
+            ID3D11Texture2DPtr tex;
+            ovr_GetTextureSwapChainBufferDX(session, TextureChain.get(), i, tex.GetIID(),
+                                            reinterpret_cast<void**>(&tex));
+            ID3D11RenderTargetViewPtr rtv;
+            device->CreateRenderTargetView(
+                tex, data({CD3D11_RENDER_TARGET_VIEW_DESC{D3D11_RTV_DIMENSION_TEXTURE2D,
+                                                          DXGI_FORMAT_R8G8B8A8_UNORM}}),
+                &rtv);
+            TexRtvs.push_back(rtv);
+        }
     }
 
-    auto AdvanceToNextTexture() {
-        return TextureSet->CurrentIndex = (TextureSet->CurrentIndex + 1) % TextureSet->TextureCount;
+    int GetTextureCount(ovrSession session) {
+        int textureCount = 0;
+        VALIDATE(
+            OVR_SUCCESS(ovr_GetTextureSwapChainLength(session, TextureChain.get(), &textureCount)),
+            "Error getting Texture Swap Chain Length");
+        return textureCount;
     }
 
-    unique_ptr<ovrSwapTextureSet, function<void(ovrSwapTextureSet*)>> TextureSet;
-    ID3D11RenderTargetViewPtr TexRtvs[2];
+    auto GetRtv(ovrSession session) {
+        int index = 0;
+        ovr_GetTextureSwapChainCurrentIndex(session, TextureChain.get(), &index);
+        return TexRtvs[index];
+    }
+
+    void Commit(ovrSession session) {
+        ovr_CommitTextureSwapChain(session, TextureChain.get());
+    }
+
+    static ovrTextureSwapChainDesc GetTextureSwapChainDesc(const ovrSizei size) {
+        auto desc = ovrTextureSwapChainDesc{};
+        desc.Type = ovrTexture_2D;
+        desc.Format = OVR_FORMAT_R8G8B8A8_UNORM_SRGB;
+        desc.ArraySize = 1;
+        desc.Width = size.w;
+        desc.Height = size.h;
+        desc.MipLevels = 1;
+        desc.SampleCount = 1;
+        desc.StaticImage = ovrFalse;
+        desc.MiscFlags = ovrTextureMisc_DX_Typeless;
+        desc.BindFlags = ovrTextureBind_DX_RenderTarget;
+        return desc;
+    }
+
+    unique_ptr<ovrTextureSwapChainData, function<void(ovrTextureSwapChainData*)>> TextureChain;
+    vector<ID3D11RenderTargetViewPtr> TexRtvs;
 };
 
 DirectX11::DirectX11(HWND window, int vpW, int vpH, const LUID* pLuid)
@@ -620,25 +646,28 @@ ovrResult MainLoop(const Window& window) {
     // Create mirror texture to see on the monitor, stash it in a unique_ptr for automatic cleanup.
     const auto mirrorTexture = create_unique(
         [&result, session = session.get(), &directx] {
-            ovrD3D11Texture* mirrorTexture{};
-            result = ovr_CreateMirrorTextureD3D11(
-                session, directx.Device,
-                data({CD3D11_TEXTURE2D_DESC(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, directx.WinSizeW,
-                                            directx.WinSizeH, 1, 1)}),
-                0, reinterpret_cast<ovrTexture**>(&mirrorTexture));
+            auto desc = ovrMirrorTextureDesc{};
+            desc.Format = OVR_FORMAT_R8G8B8A8_UNORM_SRGB;
+            desc.Width = directx.WinSizeW;
+            desc.Height = directx.WinSizeH;
+            desc.MiscFlags = 0;
+            ovrMirrorTextureData* mirrorTexture{};
+            result = ovr_CreateMirrorTextureDX(session, directx.Device, &desc, &mirrorTexture);
             return mirrorTexture;
         },
         // lambda to destroy mirror texture on unique_ptr destruction
-        [session = session.get()](ovrD3D11Texture* mt) {
-            ovr_DestroyMirrorTexture(session, &mt->Texture);
+        [session = session.get()](ovrMirrorTextureData * mt) {
+            ovr_DestroyMirrorTexture(session, mt);
         });
     if (OVR_FAILURE(result)) return result;
 
     // Initialize the scene and camera
     const auto roomScene = Scene{directx.Device, directx.Context};
-    auto mainCam = Camera{XMVectorSet(0.0f, 1.6f, 5.0f, 0), XMQuaternionIdentity()};
+    auto mainCam = Camera{XMVectorSet(0.0f, 0.0f, 5.0f, 0), XMQuaternionIdentity()};
+    ovr_SetTrackingOriginType(session.get(), ovrTrackingOrigin_FloorLevel);
 
     // Main loop
+    long long frameIndex = 0;
     while (window.HandleMessages()) {
         // Handle input
         [&mainCam, &window] {
@@ -666,25 +695,21 @@ ovrResult MainLoop(const Window& window) {
             ovr_GetRenderDesc(session.get(), ovrEye_Left, hmdDesc.DefaultEyeFov[ovrEye_Left]),
             ovr_GetRenderDesc(session.get(), ovrEye_Right, hmdDesc.DefaultEyeFov[ovrEye_Right])};
 
-        const auto sensorSampleTime = ovr_GetTimeInSeconds();
-        const auto eyeRenderPoses = [session = session.get(), &eyeRenderDesc] {
+        auto sensorSampleTime = 0.0;
+        const auto eyeRenderPoses = [session = session.get(), &eyeRenderDesc, frameIndex,
+                                     &sensorSampleTime] {
             array<ovrPosef, 2> res;
-            const auto frameTime = ovr_GetPredictedDisplayTime(session, 0);
-            // Keeping sensorSampleTime as close to ovr_GetTrackingState as possible - fed into the
-            // layer
-            const auto hmdState = ovr_GetTrackingState(session, frameTime, ovrTrue);
-            const ovrVector3f HmdToEyeViewOffset[] = {
-                eyeRenderDesc[ovrEye_Left].HmdToEyeViewOffset,
-                eyeRenderDesc[ovrEye_Right].HmdToEyeViewOffset};
-            ovr_CalcEyePoses(hmdState.HeadPose.ThePose, HmdToEyeViewOffset, res.data());
+            const ovrVector3f HmdToEyeOffset[] = {eyeRenderDesc[ovrEye_Left].HmdToEyeOffset,
+                                                  eyeRenderDesc[ovrEye_Right].HmdToEyeOffset};
+            ovr_GetEyePoses(session, frameIndex, ovrTrue, HmdToEyeOffset, res.data(),
+                            &sensorSampleTime);
             return res;
         }();
 
         // Render Scene to Eye Buffers
         for (auto eye : {ovrEye_Left, ovrEye_Right}) {
             // Increment to use next texture, just before rendering
-            const auto texIndex = eyeRenderTextures[eye].AdvanceToNextTexture();
-            directx.ClearAndSetRenderTarget(eyeRenderTextures[eye].TexRtvs[texIndex],
+            directx.ClearAndSetRenderTarget(eyeRenderTextures[eye].GetRtv(session.get()),
                                             eyeDepthBuffers[eye]);
             directx.SetViewport(eyeRenderViewports[eye]);
 
@@ -697,12 +722,14 @@ ovrResult MainLoop(const Window& window) {
             // Get view and projection matrices for the eye camera
             const auto CombinedPos = mainCam.Pos + XMVector3Rotate(eyePos, mainCam.Rot);
             const auto finalCam = Camera{CombinedPos, XMQuaternionMultiply(eyeQuat, mainCam.Rot)};
-            const auto projT = ovrMatrix4f_Projection(eyeRenderDesc[eye].Fov, 0.2f, 1000.0f,
-                                                      ovrProjection_RightHanded);
+            const auto projT =
+                ovrMatrix4f_Projection(eyeRenderDesc[eye].Fov, 0.2f, 1000.0f, ovrProjection_None);
             const auto proj = XMMatrixTranspose(XMMATRIX{&projT.M[0][0]});
 
             // Render the scene
             roomScene.Render(directx, finalCam.GetViewMatrix() * proj);
+
+            eyeRenderTextures[eye].Commit(session.get());
         }
 
         // Initialize our single full screen Fov layer.
@@ -710,7 +737,7 @@ ovrResult MainLoop(const Window& window) {
                          sensorSampleTime] {
             auto res = ovrLayerEyeFov{{ovrLayerType_EyeFov, 0}};
             for (auto eye : {ovrEye_Left, ovrEye_Right}) {
-                res.ColorTexture[eye] = eyeRenderTextures[eye].TextureSet.get();
+                res.ColorTexture[eye] = eyeRenderTextures[eye].TextureChain.get();
                 res.Viewport[eye] = eyeRenderViewports[eye];
                 res.Fov[eye] = hmdDesc.DefaultEyeFov[eye];
                 res.RenderPose[eye] = eyeRenderPoses[eye];
@@ -719,12 +746,22 @@ ovrResult MainLoop(const Window& window) {
             return res;
         }();
         const auto layers = &ld.Header;
-        result = ovr_SubmitFrame(session.get(), 0, nullptr, &layers, 1);
+        result = ovr_SubmitFrame(session.get(), frameIndex, nullptr, &layers, 1);
         // exit the rendering loop if submit returns an error, will retry on ovrError_DisplayLost
         if (OVR_FAILURE(result)) return result;
 
+        auto sessionStatus = ovrSessionStatus{};
+        ovr_GetSessionStatus(session.get(), &sessionStatus);
+        if (sessionStatus.ShouldQuit)
+            break;
+        if (sessionStatus.ShouldRecenter)
+            ovr_RecenterTrackingOrigin(session.get());
+
         // Display mirror texture on monitor
-        directx.Context->CopyResource(directx.BackBuffer, mirrorTexture->D3D11.pTexture);
+        ID3D11Texture2DPtr mirrorTexDx;
+        ovr_GetMirrorTextureBufferDX(session.get(), mirrorTexture.get(), mirrorTexDx.GetIID(),
+                                     reinterpret_cast<void**>(&mirrorTexDx));
+        directx.Context->CopyResource(directx.BackBuffer, mirrorTexDx);
         directx.SwapChain->Present(0, 0);
     }
 
