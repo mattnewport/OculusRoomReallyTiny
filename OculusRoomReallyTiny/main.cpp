@@ -276,7 +276,7 @@ struct TriangleSet {
                 };
                 const auto rotr3 = [](int x, int rot) { return x >> rot | (x << (3 - rot)) & 7; };
                 const auto p = cv(rotr3(v | faceDiv3 << 2, faceMod3));
-                XMFLOAT2 uvs[] = {{p.x, p.y}, {p.z, p.x}, {p.z, p.y}};
+                const XMFLOAT2 uvs[] = {{p.x, p.y}, {p.z, p.x}, {p.z, p.y}};
                 Vertices.push_back({p, modifyColor(b.c, p), uvs[faceMod3]});
             }
         }
@@ -311,8 +311,8 @@ struct Model {
         dx.Context->IASetInputLayout(dx.InputLayout);
         dx.Context->IASetIndexBuffer(IndexBuffer, DXGI_FORMAT_R16_UINT, 0);
         const auto vbs = {VertexBuffer.GetInterfacePtr()};
-        dx.Context->IASetVertexBuffers(0, UINT(size(vbs)), data({VertexBuffer.GetInterfacePtr()}),
-                                       data({UINT(sizeof(Vertex))}), data({0u}));
+        dx.Context->IASetVertexBuffers(0, UINT(size(vbs)), data(vbs), data({UINT(sizeof(Vertex))}),
+                                       data({0u}));
         dx.Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
         dx.Context->VSSetShader(dx.D3DVert, nullptr, 0);
