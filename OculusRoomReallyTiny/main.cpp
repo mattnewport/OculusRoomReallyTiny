@@ -47,13 +47,21 @@ limitations under the License.
 using namespace DirectX;
 using namespace std;
 
-#ifndef VALIDATE
-#define VALIDATE(x, msg)                                                  \
-    if (!(x)) {                                                           \
-        MessageBoxA(NULL, (msg), "OculusRoomTiny", MB_ICONERROR | MB_OK); \
-        exit(-1);                                                         \
+void Validate(bool x, const char* msg) {
+    if (!(x)) {
+        MessageBoxA(NULL, (msg), "OculusRoomTiny", MB_ICONERROR | MB_OK);
+        exit(-1);
     }
-#endif
+}
+
+template <typename T>
+const T* temp_ptr(T&& x) { return &x; }
+
+// Helper to wrap ovr types like ovrSession in a unique_ptr with custom create /
+// destroy
+const auto create_unique = [](auto* p, auto destroyFunc) {
+    return unique_ptr<decay_t<decltype(*p)>, decltype(destroyFunc)>{p, destroyFunc};
+};
 
 // Define _com_ptr_t COM smart pointer typedefs for all the D3D and DXGI interfaces we use
 #define COM_SMARTPTR_TYPEDEF(x) _COM_SMARTPTR_TYPEDEF(x, __uuidof(x))
@@ -76,6 +84,7 @@ COM_SMARTPTR_TYPEDEF(IDXGIAdapter);
 COM_SMARTPTR_TYPEDEF(IDXGIDevice1);
 COM_SMARTPTR_TYPEDEF(IDXGIFactory);
 COM_SMARTPTR_TYPEDEF(IDXGISwapChain);
+#undef COM_SMARTPTR_TYPEDEF
 
 struct Window {
     Window(HINSTANCE hinst, LPCWSTR title) : Running{true} {
@@ -111,7 +120,7 @@ struct Window {
             if (!tryReinit) {
                 ovrErrorInfo errorInfo{};
                 ovr_GetLastErrorInfo(&errorInfo);
-                VALIDATE(OVR_SUCCESS(res), errorInfo.ErrorString);
+                Validate(OVR_SUCCESS(res), errorInfo.ErrorString);
                 break;
             }
             // Sleep a bit before retrying to reduce CPU load while the HMD is disconnected
@@ -145,34 +154,33 @@ private:
     bool Running = false;
 };
 
-struct DepthBuffer {
-    DepthBuffer(ID3D11Device* Device, ovrSizei size) {
-        ID3D11Texture2DPtr Tex;
-        Device->CreateTexture2D(
-            data({CD3D11_TEXTURE2D_DESC(DXGI_FORMAT_D24_UNORM_S8_UINT, size.w, size.h, 1, 1,
-                                        D3D11_BIND_DEPTH_STENCIL)}),
-            nullptr, &Tex);
-        Device->CreateDepthStencilView(Tex, nullptr, &TexDsv);
-    }
-
-    ID3D11DepthStencilViewPtr TexDsv;
-};
-
 struct DirectX11 {
     DirectX11(HWND window, int vpW, int vpH, const LUID* pLuid);
 
     void ClearAndSetRenderTarget(ID3D11RenderTargetView* rendertarget,
-                                 const DepthBuffer& depthbuffer) const {
+                                 ID3D11DepthStencilView* depthbuffer) const {
         Context->ClearRenderTargetView(rendertarget, data({0.0f, 0.0f, 0.0f, 0.0f}));
-        Context->ClearDepthStencilView(depthbuffer.TexDsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
+        Context->ClearDepthStencilView(depthbuffer, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
                                        1.0f, 0);
-        Context->OMSetRenderTargets(1, &rendertarget, depthbuffer.TexDsv);
+        Context->OMSetRenderTargets(1, &rendertarget, depthbuffer);
     }
 
     void SetViewport(const ovrRecti& vp) const {
         Context->RSSetViewports(
             1, data({D3D11_VIEWPORT{float(vp.Pos.x), float(vp.Pos.y), float(vp.Size.w),
                                     float(vp.Size.h), 0.0f, 1.0f}}));
+    }
+
+    auto createBuffer(const D3D11_BUFFER_DESC& desc) {
+        ID3D11BufferPtr res;
+        Validate(SUCCEEDED(Device->CreateBuffer(&desc, nullptr, &res)), "CreateBuffer failed");
+        return res;
+    }
+
+    auto createAndFillBuffer(const D3D11_BUFFER_DESC& desc, const D3D11_SUBRESOURCE_DATA& srd) {
+        ID3D11BufferPtr res;
+        Validate(SUCCEEDED(Device->CreateBuffer(&desc, &srd, &res)), "CreateBuffer failed");
+        return res;
     }
 
     int WinSizeW = 0, WinSizeH = 0;
@@ -191,15 +199,6 @@ enum class TextureFill { WHITE, WALL, FLOOR, CEILING };
 
 auto createTexture(ID3D11Device* device, ID3D11DeviceContext* context, TextureFill texFill) {
     constexpr auto widthHeight = 256;
-    auto texDesc =
-        CD3D11_TEXTURE2D_DESC(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, widthHeight, widthHeight, 1, 0,
-                              D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET);
-    texDesc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
-
-    ID3D11Texture2DPtr tex;
-    device->CreateTexture2D(&texDesc, nullptr, &tex);
-    ID3D11ShaderResourceViewPtr texSrv;
-    device->CreateShaderResourceView(tex, nullptr, &texSrv);
 
     // Fill texture with requested pattern
     const auto getColor = [texFill](auto x, auto y) {
@@ -227,7 +226,15 @@ auto createTexture(ID3D11Device* device, ID3D11DeviceContext* context, TextureFi
     for (auto y = 0u; y < widthHeight; ++y)
         for (auto x = 0u; x < widthHeight; ++x) pix[y * widthHeight + x] = getColor(x, y);
 
-    context->UpdateSubresource(tex, 0, nullptr, data(pix), widthHeight * sizeof(pix[0]), 0);
+    auto texDesc =
+        CD3D11_TEXTURE2D_DESC(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, widthHeight, widthHeight, 1, 0,
+                              D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET);
+    texDesc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+    ID3D11Texture2DPtr tex;
+    device->CreateTexture2D(&texDesc, nullptr, &tex);
+    ID3D11ShaderResourceViewPtr texSrv;
+    device->CreateShaderResourceView(tex, nullptr, &texSrv);
+    context->UpdateSubresource(tex, 0, nullptr, pix, widthHeight * sizeof(pix[0]), 0);
     context->GenerateMips(texSrv);
 
     return texSrv;
@@ -287,17 +294,17 @@ struct TriangleSet {
 };
 
 struct Model {
-    Model(ID3D11Device* device, const TriangleSet& t, XMFLOAT3 argPos,
+    Model(DirectX11& device, const TriangleSet& t, XMFLOAT3 argPos,
           ID3D11ShaderResourceView* tex)
         : Pos(argPos), Tex(tex), NumIndices{size(t.Indices)} {
         auto byteSize = [](const auto& v) { return UINT(size(v) * sizeof(v[0])); };
-        device->CreateBuffer(
-            data({CD3D11_BUFFER_DESC{byteSize(t.Vertices), D3D11_BIND_VERTEX_BUFFER}}),
-            data({D3D11_SUBRESOURCE_DATA{t.Vertices.data()}}), &VertexBuffer);
+        VertexBuffer =
+            device.createAndFillBuffer(CD3D11_BUFFER_DESC{byteSize(t.Vertices), D3D11_BIND_VERTEX_BUFFER},
+                                D3D11_SUBRESOURCE_DATA{data(t.Vertices)});
 
-        device->CreateBuffer(
-            data({CD3D11_BUFFER_DESC{byteSize(t.Indices), D3D11_BIND_INDEX_BUFFER}}),
-            data({D3D11_SUBRESOURCE_DATA{t.Indices.data()}}), &IndexBuffer);
+        IndexBuffer = device.createAndFillBuffer(
+            CD3D11_BUFFER_DESC{byteSize(t.Indices), D3D11_BIND_INDEX_BUFFER},
+            D3D11_SUBRESOURCE_DATA{data(t.Indices)});
     }
 
     void Render(DirectX11& dx, const XMMATRIX& projView) const {
@@ -335,9 +342,9 @@ private:
 };
 
 struct Scene {
-    Scene(ID3D11Device* device, ID3D11DeviceContext* context) {
-        auto add = [this, device](auto&&... xs) {
-            Models.push_back(make_unique<Model>(device, forward<decltype(xs)>(xs)...));
+    Scene(DirectX11& dx11) {
+        auto add = [this, &dx11](auto&&... xs) {
+            Models.emplace_back(make_unique<Model>(dx11, forward<decltype(xs)>(xs)...));
         };
 
         enum : uint32_t {
@@ -349,6 +356,8 @@ struct Scene {
             BLUE = 0xff202050
         };
 
+        auto device = dx11.Device.GetInterfacePtr();
+        auto context = dx11.Context.GetInterfacePtr();
         TriangleSet cube{{0.5f, -0.5f, 0.5f, -0.5f, 0.5f, -0.5f, GRAY}};
         add(cube, XMFLOAT3{0, 0, 0}, createTexture(device, context, TextureFill::CEILING));
 
@@ -413,43 +422,76 @@ struct Camera {
     }
 };
 
-// ovrSwapTextureSet wrapper class that also maintains the render target views needed for D3D11
-// rendering.
-struct OculusTexture {
-    OculusTexture(ID3D11Device* device, ovrSession session, ovrSizei size)
-        : TextureChain{[session, size, device, &texRtvs = TexRtvs] {
-                         // Create and validate the swap texture set and stash it in unique_ptr
-                         ovrTextureSwapChainData* ts{};
-                         VALIDATE(OVR_SUCCESS(ovr_CreateTextureSwapChainDX(
-                                      session, device, data({GetTextureSwapChainDesc(size)}), &ts)),
-                                  "Failed to create SwapTextureSet.");
-                         return ts;
-                     }(),
-                     // unique_ptr Deleter lambda to clean up the swap texture set
-                     [session](ovrTextureSwapChainData* ts) {
-                         ovr_DestroyTextureSwapChain(session, ts);
-                     }} {
-        // Create render target views for each of the textures in the swap texture set
-        for (int i = 0; i < GetTextureCount(session); ++i) {
+auto createTextureSwapChain(ID3D11Device* device, ovrSession session, int width, int height) {
+    // Create and validate the swap texture set and stash it in unique_ptr
+    auto desc = ovrTextureSwapChainDesc{};
+    desc.Type = ovrTexture_2D;
+    desc.Format = OVR_FORMAT_R8G8B8A8_UNORM_SRGB;
+    desc.ArraySize = 1;
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = 1;
+    desc.SampleCount = 1;
+    desc.StaticImage = ovrFalse;
+    desc.MiscFlags = ovrTextureMisc_DX_Typeless;
+    desc.BindFlags = ovrTextureBind_DX_RenderTarget;
+    ovrTextureSwapChainData* ts{};
+    Validate(OVR_SUCCESS(ovr_CreateTextureSwapChainDX(session, device, &desc, &ts)),
+             "Failed to create SwapTextureSet.");
+    // unique_ptr deleter lambda to clean up the swap texture set
+    return create_unique(
+        ts, [session](ovrTextureSwapChainData* ts) { ovr_DestroyTextureSwapChain(session, ts); });
+}
+using TextureSwapChainPtr = decltype(createTextureSwapChain(nullptr, nullptr, 0, 0));
+
+// ovrSwapTextureSet wrapper class that also maintains the render target views and depth stencil
+// view needed for D3D11 rendering.
+class OvrEyeRT {
+    static auto createDepthStencilView(ID3D11Device* device, int width, int height) {
+        ID3D11Texture2DPtr tex;
+        Validate(SUCCEEDED(device->CreateTexture2D(
+                     temp_ptr(CD3D11_TEXTURE2D_DESC(DXGI_FORMAT_D24_UNORM_S8_UINT, width, height, 1,
+                                                    1, D3D11_BIND_DEPTH_STENCIL)),
+                     nullptr, &tex)),
+                 "CreateTexture2D failed");
+        ID3D11DepthStencilViewPtr dsv;
+        Validate(SUCCEEDED(device->CreateDepthStencilView(tex, nullptr, &dsv)),
+                 "CreateDepthStencilView failed");
+        return dsv;
+    }
+
+    static auto createTexRtvs(ID3D11Device* device, ovrSession session,
+                              ovrTextureSwapChainData* tscd) {
+        vector<ID3D11RenderTargetViewPtr> res;
+        const auto texCount = [tc = 0, session, tscd]() mutable {
+            ovr_GetTextureSwapChainLength(session, tscd, &tc);
+            return tc;
+        }();
+        for (int i = 0; i < texCount; ++i) {
             ID3D11Texture2DPtr tex;
-            ovr_GetTextureSwapChainBufferDX(session, TextureChain.get(), i, tex.GetIID(),
+            ovr_GetTextureSwapChainBufferDX(session, tscd, i, tex.GetIID(),
                                             reinterpret_cast<void**>(&tex));
             ID3D11RenderTargetViewPtr rtv;
             device->CreateRenderTargetView(
-                tex, data({CD3D11_RENDER_TARGET_VIEW_DESC{D3D11_RTV_DIMENSION_TEXTURE2D,
-                                                          DXGI_FORMAT_R8G8B8A8_UNORM}}),
+                tex,
+                temp_ptr(CD3D11_RENDER_TARGET_VIEW_DESC{D3D11_RTV_DIMENSION_TEXTURE2D,
+                                                        DXGI_FORMAT_R8G8B8A8_UNORM}),
                 &rtv);
-            TexRtvs.push_back(rtv);
+            res.push_back(rtv);
         }
+        return res;
     }
 
-    int GetTextureCount(ovrSession session) {
-        int textureCount = 0;
-        VALIDATE(
-            OVR_SUCCESS(ovr_GetTextureSwapChainLength(session, TextureChain.get(), &textureCount)),
-            "Error getting Texture Swap Chain Length");
-        return textureCount;
-    }
+public:
+    OvrEyeRT(ID3D11Device* device, ovrSession session, ovrSizei size)
+        : TextureChain{createTextureSwapChain(device, session, size.w, size.h)},
+          TexRtvs{createTexRtvs(device, session, TextureChain.get())},
+          dsv{createDepthStencilView(device, size.w, size.h)},
+          viewport{{0, 0}, size} {}
+
+    OvrEyeRT(ID3D11Device* device, ovrSession session, ovrEyeType eye, const ovrHmdDesc& hmdDesc)
+        : OvrEyeRT{device, session,
+                   ovr_GetFovTextureSize(session, eye, hmdDesc.DefaultEyeFov[eye], 1.0f)} {}
 
     auto GetRtv(ovrSession session) {
         int index = 0;
@@ -457,27 +499,12 @@ struct OculusTexture {
         return TexRtvs[index];
     }
 
-    void Commit(ovrSession session) {
-        ovr_CommitTextureSwapChain(session, TextureChain.get());
-    }
+    void Commit(ovrSession session) { ovr_CommitTextureSwapChain(session, TextureChain.get()); }
 
-    static ovrTextureSwapChainDesc GetTextureSwapChainDesc(const ovrSizei size) {
-        auto desc = ovrTextureSwapChainDesc{};
-        desc.Type = ovrTexture_2D;
-        desc.Format = OVR_FORMAT_R8G8B8A8_UNORM_SRGB;
-        desc.ArraySize = 1;
-        desc.Width = size.w;
-        desc.Height = size.h;
-        desc.MipLevels = 1;
-        desc.SampleCount = 1;
-        desc.StaticImage = ovrFalse;
-        desc.MiscFlags = ovrTextureMisc_DX_Typeless;
-        desc.BindFlags = ovrTextureBind_DX_RenderTarget;
-        return desc;
-    }
-
-    unique_ptr<ovrTextureSwapChainData, function<void(ovrTextureSwapChainData*)>> TextureChain;
+    TextureSwapChainPtr TextureChain;
     vector<ID3D11RenderTargetViewPtr> TexRtvs;
+    ID3D11DepthStencilViewPtr dsv;
+    ovrRecti viewport;
 };
 
 DirectX11::DirectX11(HWND window, int vpW, int vpH, const LUID* pLuid)
@@ -488,7 +515,7 @@ DirectX11::DirectX11(HWND window, int vpW, int vpH, const LUID* pLuid)
                  windowSize.bottom - windowSize.top, SWP_NOMOVE | SWP_NOZORDER | SWP_SHOWWINDOW);
 
     IDXGIFactoryPtr dxgiFactory;
-    VALIDATE(
+    Validate(
         SUCCEEDED(CreateDXGIFactory1(dxgiFactory.GetIID(), reinterpret_cast<void**>(&dxgiFactory))),
         "CreateDXGIFactory1 failed");
 
@@ -508,51 +535,50 @@ DirectX11::DirectX11(HWND window, int vpW, int vpH, const LUID* pLuid)
         return D3D11_CREATE_DEVICE_FLAG(0);
 #endif
     }();
-    VALIDATE(SUCCEEDED(D3D11CreateDeviceAndSwapChain(
+    Validate(SUCCEEDED(D3D11CreateDeviceAndSwapChain(
                  adapter, DriverType, nullptr, createFlags, nullptr, 0, D3D11_SDK_VERSION,
-                 data({DXGI_SWAP_CHAIN_DESC{
+                 temp_ptr(DXGI_SWAP_CHAIN_DESC{
                      {UINT(WinSizeW), UINT(WinSizeH), {}, DXGI_FORMAT_R8G8B8A8_UNORM},  // Buffer
                      {1},  // SampleDesc
                      DXGI_USAGE_RENDER_TARGET_OUTPUT,
                      2,  // BufferCount
                      window,
                      TRUE,
-                     DXGI_SWAP_EFFECT_SEQUENTIAL}}),
+                     DXGI_SWAP_EFFECT_SEQUENTIAL}),
                  &SwapChain, &Device, nullptr, &Context)),
              "D3D11CreateDeviceAndSwapChain failed");
 
     // Create backbuffer
-    VALIDATE(SUCCEEDED(SwapChain->GetBuffer(0, BackBuffer.GetIID(),
+    Validate(SUCCEEDED(SwapChain->GetBuffer(0, BackBuffer.GetIID(),
                                             reinterpret_cast<void**>(&BackBuffer))),
              "IDXGISwapChain::GetBuffer() failed");
 
     // Buffer for shader constants
-    Device->CreateBuffer(data({CD3D11_BUFFER_DESC(sizeof(XMMATRIX), D3D11_BIND_CONSTANT_BUFFER,
-                                                  D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE)}),
-                         nullptr, &ConstantBuffer);
+    ConstantBuffer = createBuffer(CD3D11_BUFFER_DESC(sizeof(XMMATRIX), D3D11_BIND_CONSTANT_BUFFER,
+                                                     D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE));
     auto buffs = {ConstantBuffer.GetInterfacePtr()};
     Context->VSSetConstantBuffers(0, UINT(size(buffs)), data(buffs));
 
     // Set max frame latency to 1
     IDXGIDevice1Ptr DXGIDevice1;
-    VALIDATE(SUCCEEDED(Device.QueryInterface(DXGIDevice1.GetIID(), &DXGIDevice1)),
+    Validate(SUCCEEDED(Device.QueryInterface(DXGIDevice1.GetIID(), &DXGIDevice1)),
              "QueryInterface failed");
     DXGIDevice1->SetMaximumFrameLatency(1);
 
     // Set up render states
     // Create and set rasterizer state
     ID3D11RasterizerStatePtr rss;
-    Device->CreateRasterizerState(data({CD3D11_RASTERIZER_DESC{D3D11_DEFAULT}}), &rss);
+    Device->CreateRasterizerState(temp_ptr(CD3D11_RASTERIZER_DESC{D3D11_DEFAULT}), &rss);
     Context->RSSetState(rss);
 
     // Create and set depth stencil state
     ID3D11DepthStencilStatePtr dss;
-    Device->CreateDepthStencilState(data({CD3D11_DEPTH_STENCIL_DESC{D3D11_DEFAULT}}), &dss);
+    Device->CreateDepthStencilState(temp_ptr(CD3D11_DEPTH_STENCIL_DESC{D3D11_DEFAULT}), &dss);
     Context->OMSetDepthStencilState(dss, 0);
 
     // Create and set blend state
     ID3D11BlendStatePtr bs;
-    Device->CreateBlendState(data({CD3D11_BLEND_DESC{D3D11_DEFAULT}}), &bs);
+    Device->CreateBlendState(temp_ptr(CD3D11_BLEND_DESC{D3D11_DEFAULT}), &bs);
     Context->OMSetBlendState(bs, nullptr, 0xffffffff);
 
     auto compileShader = [](const char* src, const char* target) {
@@ -606,12 +632,6 @@ DirectX11::DirectX11(HWND window, int vpW, int vpH, const LUID* pLuid)
     Device->CreateSamplerState(&ss, &SamplerState);
 }
 
-// Helper to wrap ovr types like ovrSession and ovrTexture* in a unique_ptr with custom create / destroy
-const auto create_unique = [](auto createFunc, auto destroyFunc) {
-    return unique_ptr<decay_t<decltype(*createFunc())>, decltype(destroyFunc)>{
-        createFunc(), destroyFunc};
-};
-
 ovrResult MainLoop(const Window& window) {
     auto result = ovrResult{};
     auto luid = ovrGraphicsLuid{};
@@ -621,7 +641,7 @@ ovrResult MainLoop(const Window& window) {
             ovrSession session{};
             result = ovr_Create(&session, &luid);
             return session;
-        },
+        }(),
         ovr_Destroy);
     if (OVR_FAILURE(result)) return result;
 
@@ -633,41 +653,32 @@ ovrResult MainLoop(const Window& window) {
                              reinterpret_cast<LUID*>(&luid)};
 
     // Create the eye render buffers (caution if actual size < requested due to HW limits).
-    const ovrSizei idealSizes[] = {
-        ovr_GetFovTextureSize(session.get(), ovrEye_Left, hmdDesc.DefaultEyeFov[ovrEye_Left], 1.0f),
-        ovr_GetFovTextureSize(session.get(), ovrEye_Right, hmdDesc.DefaultEyeFov[ovrEye_Right], 1.0f)};
-    OculusTexture eyeRenderTextures[] = {{directx.Device, session.get(), idealSizes[ovrEye_Left]},
-                                         {directx.Device, session.get(), idealSizes[ovrEye_Right]}};
-    const DepthBuffer eyeDepthBuffers[] = {{directx.Device, idealSizes[ovrEye_Left]},
-                                           {directx.Device, idealSizes[ovrEye_Right]}};
-    const ovrRecti eyeRenderViewports[] = {{{0, 0}, idealSizes[ovrEye_Left]},
-                                           {{0, 0}, idealSizes[ovrEye_Right]}};
+    OvrEyeRT eyeRTs[] = {{directx.Device, session.get(), ovrEye_Left, hmdDesc},
+                         {directx.Device, session.get(), ovrEye_Right, hmdDesc}};
 
     // Create mirror texture to see on the monitor, stash it in a unique_ptr for automatic cleanup.
     const auto mirrorTexture = create_unique(
         [&result, session = session.get(), &directx] {
-            auto desc = ovrMirrorTextureDesc{};
-            desc.Format = OVR_FORMAT_R8G8B8A8_UNORM_SRGB;
-            desc.Width = directx.WinSizeW;
-            desc.Height = directx.WinSizeH;
-            desc.MiscFlags = 0;
             ovrMirrorTextureData* mirrorTexture{};
-            result = ovr_CreateMirrorTextureDX(session, directx.Device, &desc, &mirrorTexture);
+            result = ovr_CreateMirrorTextureDX(
+                session, directx.Device,
+                temp_ptr(ovrMirrorTextureDesc{OVR_FORMAT_R8G8B8A8_UNORM_SRGB, directx.WinSizeW,
+                                              directx.WinSizeH}),
+                &mirrorTexture);
             return mirrorTexture;
-        },
+        }(),
         // lambda to destroy mirror texture on unique_ptr destruction
-        [session = session.get()](ovrMirrorTextureData * mt) {
+        [session = session.get()](ovrMirrorTextureData* mt) {
             ovr_DestroyMirrorTexture(session, mt);
         });
     if (OVR_FAILURE(result)) return result;
 
     // Initialize the scene and camera
-    const auto roomScene = Scene{directx.Device, directx.Context};
+    const auto roomScene = Scene{directx};
     auto mainCam = Camera{XMVectorSet(0.0f, 0.0f, 5.0f, 0), XMQuaternionIdentity()};
     ovr_SetTrackingOriginType(session.get(), ovrTrackingOrigin_FloorLevel);
 
     // Main loop
-    long long frameIndex = 0;
     while (window.HandleMessages()) {
         // Handle input
         [&mainCam, &window] {
@@ -696,22 +707,20 @@ ovrResult MainLoop(const Window& window) {
             ovr_GetRenderDesc(session.get(), ovrEye_Right, hmdDesc.DefaultEyeFov[ovrEye_Right])};
 
         auto sensorSampleTime = 0.0;
-        const auto eyeRenderPoses = [session = session.get(), &eyeRenderDesc, frameIndex,
-                                     &sensorSampleTime] {
+        const auto eyeRenderPoses = [session = session.get(), &eyeRenderDesc, &sensorSampleTime] {
             array<ovrPosef, 2> res;
-            const ovrVector3f HmdToEyeOffset[] = {eyeRenderDesc[ovrEye_Left].HmdToEyeOffset,
-                                                  eyeRenderDesc[ovrEye_Right].HmdToEyeOffset};
-            ovr_GetEyePoses(session, frameIndex, ovrTrue, HmdToEyeOffset, res.data(),
-                            &sensorSampleTime);
+            const ovrPosef HmdToEyePoses[] = {eyeRenderDesc[ovrEye_Left].HmdToEyePose,
+                                               eyeRenderDesc[ovrEye_Right].HmdToEyePose};
+            ovr_GetEyePoses(session, 0, ovrTrue, HmdToEyePoses, data(res), &sensorSampleTime);
             return res;
         }();
 
         // Render Scene to Eye Buffers
         for (auto eye : {ovrEye_Left, ovrEye_Right}) {
             // Increment to use next texture, just before rendering
-            directx.ClearAndSetRenderTarget(eyeRenderTextures[eye].GetRtv(session.get()),
-                                            eyeDepthBuffers[eye]);
-            directx.SetViewport(eyeRenderViewports[eye]);
+            directx.ClearAndSetRenderTarget(eyeRTs[eye].GetRtv(session.get()),
+                                            eyeRTs[eye].dsv);
+            directx.SetViewport(eyeRTs[eye].viewport);
 
             // Get the pose information in XM format
             const auto& ori = eyeRenderPoses[eye].Orientation;
@@ -729,16 +738,15 @@ ovrResult MainLoop(const Window& window) {
             // Render the scene
             roomScene.Render(directx, finalCam.GetViewMatrix() * proj);
 
-            eyeRenderTextures[eye].Commit(session.get());
+            eyeRTs[eye].Commit(session.get());
         }
 
         // Initialize our single full screen Fov layer.
-        const auto ld = [&eyeRenderTextures, &eyeRenderViewports, &hmdDesc, &eyeRenderPoses,
-                         sensorSampleTime] {
-            auto res = ovrLayerEyeFov{{ovrLayerType_EyeFov, 0}};
+        const auto ld = [&eyeRTs, &hmdDesc, &eyeRenderPoses, sensorSampleTime] {
+            auto res = ovrLayerEyeFov{{ovrLayerType_EyeFov}};
             for (auto eye : {ovrEye_Left, ovrEye_Right}) {
-                res.ColorTexture[eye] = eyeRenderTextures[eye].TextureChain.get();
-                res.Viewport[eye] = eyeRenderViewports[eye];
+                res.ColorTexture[eye] = eyeRTs[eye].TextureChain.get();
+                res.Viewport[eye] = eyeRTs[eye].viewport;
                 res.Fov[eye] = hmdDesc.DefaultEyeFov[eye];
                 res.RenderPose[eye] = eyeRenderPoses[eye];
                 res.SensorSampleTime = sensorSampleTime;
@@ -746,7 +754,7 @@ ovrResult MainLoop(const Window& window) {
             return res;
         }();
         const auto layers = &ld.Header;
-        result = ovr_SubmitFrame(session.get(), frameIndex, nullptr, &layers, 1);
+        result = ovr_SubmitFrame(session.get(), 0, nullptr, &layers, 1);
         // exit the rendering loop if submit returns an error, will retry on ovrError_DisplayLost
         if (OVR_FAILURE(result)) return result;
 
@@ -770,11 +778,10 @@ ovrResult MainLoop(const Window& window) {
 
 int WINAPI WinMain(HINSTANCE hinst, HINSTANCE, LPSTR, int) {
     // Initializes LibOVR, and the Rift
-    VALIDATE(OVR_SUCCESS(ovr_Initialize(nullptr)), "Failed to initialize libOVR.");
+    Validate(OVR_SUCCESS(ovr_Initialize(nullptr)), "Failed to initialize libOVR.");
 
     Window window{hinst, L"Oculus Room Really Tiny (DX11)"};
     window.Run(MainLoop);
 
     ovr_Shutdown();
-    return 0;
 }
