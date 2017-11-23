@@ -55,7 +55,7 @@ void Validate(bool x, const char* msg) {
 }
 
 template <typename T>
-const T* temp_ptr(T&& x) { return &x; }
+const T* temp_ptr(const T&& x) { return &x; }
 
 // Helper to wrap ovr types like ovrSession in a unique_ptr with custom create /
 // destroy
